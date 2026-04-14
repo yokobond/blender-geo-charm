@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+env/
+
+# Blender
+*.blend1
+*.blend2
+*.blend@
+*.bphys
+*.abc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Output / generated files
+*.stl
+*.obj
+*.fbx
+*.glb
+*.gltf
+output/
+exports/
