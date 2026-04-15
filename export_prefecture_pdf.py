@@ -342,37 +342,19 @@ def export_prefecture_pdf(
     return output_path
 
 
-# ============================================================
-# Blender で実行された場合: prefecture_keychain の UI を登録する
-# bpy.app.timers を使い、オペレーター実行中のクラッシュを避けるため
-# 次の Blender イベントループで登録する。
-# ============================================================
-try:
-    import bpy as _bpy
-
-    def _register_keychain_ui():
-        import sys as _sys
-        import os as _os
+# このモジュールは prefecture_keychain.py から import して使うヘルパーです。
+# Blender UI の登録は prefecture_keychain.py 側で行います。
+#
+# Blender のスクリプティングタブからこのファイルを直接実行した場合のみ、
+# prefecture_keychain の UI を登録します。
+if __name__ == "__main__":
+    try:
+        import prefecture_keychain as _kc  # type: ignore[import]
         try:
-            _dir = _os.path.dirname(_os.path.abspath(__file__))
-        except NameError:
-            # __file__ が未定義の場合は sys.path から探す
-            _dir = None
-        if _dir and _dir not in _sys.path:
-            _sys.path.insert(0, _dir)
-        try:
-            import prefecture_keychain as _kc
-            try:
-                _kc.unregister()
-            except Exception:
-                pass
-            _kc.register()
-            print("[PDF Export] キーホルダーUIを登録しました (3D Viewport > サイドバー > キーホルダー)")
-        except Exception as e:
-            print(f"[PDF Export] UI登録エラー: {e}")
-        return None  # 1回のみ実行
-
-    _bpy.app.timers.register(_register_keychain_ui, first_interval=0.0)
-
-except ImportError:
-    pass  # bpy がない通常 Python 実行の場合は何もしない
+            _kc.unregister()
+        except Exception:
+            pass
+        _kc.register()
+        print("[PDF Export] キーホルダーUIを登録しました (3D Viewport > サイドバー > キーホルダー)")
+    except ImportError:
+        pass  # bpy がない通常 Python 実行では何もしない

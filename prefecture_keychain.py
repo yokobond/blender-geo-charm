@@ -46,8 +46,7 @@ except ImportError:
     )
 
 try:
-    from shapely.geometry import shape, Point, MultiPolygon, Polygon
-    from shapely.ops import unary_union
+    from shapely.geometry import shape, MultiPolygon
     SHAPELY_AVAILABLE = True
 except ImportError:
     SHAPELY_AVAILABLE = False
@@ -364,6 +363,37 @@ class PrefectureBoundary:
             return None
         return poly.bounds  # (minx, miny, maxx, maxy) = (lon_min, lat_min, lon_max, lat_max)
 
+    @staticmethod
+    def _rasterize(geom, resolution, lon_min, lat_min, lon_max, lat_max) -> np.ndarray:
+        """
+        Shapely ジオメトリをラスタライズして (resolution, resolution) の float32 マスクを返す。
+        geom の内側 = 1.0、外側 = 0.0。
+
+        shapely.vectorized.contains を使い、全ピクセルを一括判定する。
+        これにより O(N²) の Python ループを C 拡張の単一呼び出しに置き換える。
+        """
+        try:
+            from shapely.vectorized import contains as vec_contains
+        except ImportError:
+            # shapely < 1.8 などフォールバック: 行単位ループ
+            from shapely.prepared import prep
+            from shapely.geometry import Point as _Point
+            prepared = prep(geom)
+            lons = np.linspace(lon_min, lon_max, resolution)
+            lats = np.linspace(lat_max, lat_min, resolution)  # 北→南
+            mask = np.zeros((resolution, resolution), dtype=np.float32)
+            for iy, lat in enumerate(lats):
+                for ix, lon in enumerate(lons):
+                    if prepared.contains(_Point(lon, lat)):
+                        mask[iy, ix] = 1.0
+            return mask
+
+        lons = np.linspace(lon_min, lon_max, resolution)
+        lats = np.linspace(lat_max, lat_min, resolution)  # 北→南 (行 0 = 最北)
+        lon_grid, lat_grid = np.meshgrid(lons, lats)       # 各 (resolution, resolution)
+        inside = vec_contains(geom, lon_grid.ravel(), lat_grid.ravel())
+        return inside.reshape(resolution, resolution).astype(np.float32)
+
     def create_mask(self, name, resolution, lon_min, lat_min, lon_max, lat_max):
         """
         県の形状マスク (resolution x resolution) を生成
@@ -372,40 +402,16 @@ class PrefectureBoundary:
         poly = self.get_prefecture_polygon(name)
         if poly is None:
             return np.ones((resolution, resolution), dtype=np.float32)
-
-        mask = np.zeros((resolution, resolution), dtype=np.float32)
-        for iy in range(resolution):
-            lat = lat_max - (lat_max - lat_min) * iy / (resolution - 1)
-            for ix in range(resolution):
-                lon = lon_min + (lon_max - lon_min) * ix / (resolution - 1)
-                if poly.contains(Point(lon, lat)):
-                    mask[iy, ix] = 1.0
-        return mask
+        return self._rasterize(poly, resolution, lon_min, lat_min, lon_max, lat_max)
 
     def create_other_land_mask(self, target_name, resolution, lon_min, lat_min, lon_max, lat_max):
         """対象県以外の日本の陸地領域マスク"""
-        mask = np.zeros((resolution, resolution), dtype=np.float32)
-        
+        from shapely.ops import unary_union
         other_union = unary_union([
             data['geometry'] for name, data in self.features.items()
             if name != target_name and name not in target_name and target_name not in name
         ])
-
-        # バウンディングボックスによる事前フィルタ用の矩形
-        bounds = other_union.bounds
-        other_minx, other_miny, other_maxx, other_maxy = bounds
-
-        for iy in range(resolution):
-            lat = lat_max - (lat_max - lat_min) * iy / (resolution - 1)
-            if lat < other_miny or lat > other_maxy:
-                continue
-            for ix in range(resolution):
-                lon = lon_min + (lon_max - lon_min) * ix / (resolution - 1)
-                if lon < other_minx or lon > other_maxx:
-                    continue
-                if other_union.contains(Point(lon, lat)):
-                    mask[iy, ix] = 1.0
-        return mask
+        return self._rasterize(other_union, resolution, lon_min, lat_min, lon_max, lat_max)
 
 
     def detect_islands(self, name):
@@ -836,6 +842,45 @@ class KeychainGenerator:
             'exaggeration': self.exaggeration,
         })
 
+    def _compute_bounds(self):
+        """
+        県のバウンディングボックスを計算して返す。
+        マージン追加・1:1 アスペクト比補正済み。
+
+        Returns:
+            (lon_min, lat_min, lon_max, lat_max, span)
+            span: 実距離換算の緯度幅 (度)。ground_size_m の計算に使う。
+        """
+        bounds = self.boundary.get_bounds(self.prefecture_name)
+        if bounds:
+            lon_min, lat_min, lon_max, lat_max = bounds
+            margin = max(lon_max - lon_min, lat_max - lat_min) * self.margin_ratio
+            lon_min -= margin
+            lat_min -= margin
+            lon_max += margin
+            lat_max += margin
+        else:
+            # 神奈川県のデフォルト座標
+            lat_min, lat_max = 35.12, 35.67
+            lon_min, lon_max = 138.91, 139.79
+            margin = 0.15 * (self.margin_ratio / 0.3)
+            lon_min -= margin
+            lat_min -= margin
+            lon_max += margin
+            lat_max += margin
+
+        # アスペクト比を1:1に調整 (円形土台のため)
+        lat_center = (lat_min + lat_max) / 2
+        lon_center = (lon_min + lon_max) / 2
+        span = max(lat_max - lat_min, (lon_max - lon_min) * math.cos(math.radians(lat_center)))
+        lon_span = span / math.cos(math.radians(lat_center))
+        lat_min = lat_center - span / 2
+        lat_max = lat_center + span / 2
+        lon_min = lon_center - lon_span / 2
+        lon_max = lon_center + lon_span / 2
+
+        return lon_min, lat_min, lon_max, lat_max, span
+
     def generate(self):
         """キーホルダーモデルを生成"""
         print(f"\n{'='*60}")
@@ -858,35 +903,7 @@ class KeychainGenerator:
 
         # 3. 県のバウンディングボックスを取得
         print("[3/7] 対象県の範囲を計算中...")
-        bounds = self.boundary.get_bounds(self.prefecture_name)
-        if bounds:
-            lon_min, lat_min, lon_max, lat_max = bounds
-            # マージンを追加 (隣接県表示のため)
-            margin = max(lon_max - lon_min, lat_max - lat_min) * self.margin_ratio
-            lon_min -= margin
-            lat_min -= margin
-            lon_max += margin
-            lat_max += margin
-        else:
-            # 神奈川県のデフォルト座標
-            lat_min, lat_max = 35.12, 35.67
-            lon_min, lon_max = 138.91, 139.79
-            margin = 0.15 * (self.margin_ratio / 0.3) if self.margin_ratio != 0.3 else 0.15 # Scale default margin roughly based on ratio
-            lon_min -= margin
-            lat_min -= margin
-            lon_max += margin
-            lat_max += margin
-
-        # アスペクト比を1:1に調整 (円形土台のため)
-        lat_center = (lat_min + lat_max) / 2
-        lon_center = (lon_min + lon_max) / 2
-        span = max(lat_max - lat_min, (lon_max - lon_min) * math.cos(math.radians(lat_center)))
-        # 経度方向の補正
-        lon_span = span / math.cos(math.radians(lat_center))
-        lat_min = lat_center - span / 2
-        lat_max = lat_center + span / 2
-        lon_min = lon_center - lon_span / 2
-        lon_max = lon_center + lon_span / 2
+        lon_min, lat_min, lon_max, lat_max, span = self._compute_bounds()
 
         # 現実のサイズ (m)
         self.builder.ground_size_m = span * 111000
@@ -992,15 +1009,10 @@ class KeychainGenerator:
             if islands:
                 print(f"  → {len(islands)}個の島パーツを分離...")
                 for idx, island_poly in enumerate(islands):
-                    # 島用マスクを生成
-                    island_mask = np.zeros((self.resolution, self.resolution), dtype=np.float32)
-                    for iy in range(self.resolution):
-                        lat = lat_max - (lat_max - lat_min) * iy / (self.resolution - 1)
-                        for ix in range(self.resolution):
-                            lon = lon_min + (lon_max - lon_min) * ix / (self.resolution - 1)
-                            if island_poly.contains(Point(lon, lat)):
-                                island_mask[iy, ix] = 1.0
-                    
+                    island_mask = self.boundary._rasterize(
+                        island_poly, self.resolution,
+                        lon_min, lat_min, lon_max, lat_max,
+                    )
                     if island_mask.max() > 0:
                         self.builder.build_island_piece(
                             elevations, island_mask, col, island_idx=idx, z_offset_mm=main_z_offset
@@ -1077,31 +1089,7 @@ class KeychainGenerator:
         except Exception:
             pass
 
-        bounds = self.boundary.get_bounds(self.prefecture_name)
-        if bounds:
-            lon_min, lat_min, lon_max, lat_max = bounds
-            margin = max(lon_max - lon_min, lat_max - lat_min) * self.margin_ratio
-            lon_min -= margin
-            lat_min -= margin
-            lon_max += margin
-            lat_max += margin
-        else:
-            lat_min, lat_max = 35.12, 35.67
-            lon_min, lon_max = 138.91, 139.79
-            margin = 0.15 * (self.margin_ratio / 0.3) if self.margin_ratio != 0.3 else 0.15
-            lon_min -= margin
-            lat_min -= margin
-            lon_max += margin
-            lat_max += margin
-
-        lat_center = (lat_min + lat_max) / 2
-        lon_center = (lon_min + lon_max) / 2
-        span = max(lat_max - lat_min, (lon_max - lon_min) * math.cos(math.radians(lat_center)))
-        lon_span = span / math.cos(math.radians(lat_center))
-        lat_min = lat_center - span / 2
-        lat_max = lat_center + span / 2
-        lon_min = lon_center - lon_span / 2
-        lon_max = lon_center + lon_span / 2
+        lon_min, lat_min, lon_max, lat_max, _ = self._compute_bounds()
 
         print(f"  → 土台用PDFを {output_dir} にエクスポート中...")
         try:
