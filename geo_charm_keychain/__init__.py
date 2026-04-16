@@ -1120,7 +1120,7 @@ def register():
     )
     bpy.types.Scene.keychain_pdf_line_width = bpy.props.FloatProperty(
         name="PDFの線の太さ (pt)",
-        default=1.5, min=0.1, max=10.0, step=10,
+        default=0.0, min=0.0, max=10.0, step=10,
         description="出力される県境PDFの線の太さ"
     )
     bpy.types.Scene.keychain_pdf_color_sea = bpy.props.FloatVectorProperty(

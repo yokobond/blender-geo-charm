@@ -30,8 +30,8 @@ GEOJSON_URL = (
     "https://raw.githubusercontent.com/dataofjapan/land/master/japan.geojson"
 )
 
-LINE_WIDTH_TARGET = 1.5
-LINE_WIDTH_NEIGHBOR = 0.4
+LINE_WIDTH_TARGET = 0.0
+LINE_WIDTH_NEIGHBOR = 0.0
 
 COLOR_TARGET = (0.0, 0.0, 0.0)
 COLOR_NEIGHBOR = (0.65, 0.65, 0.65)
@@ -150,7 +150,8 @@ def draw_polygon(c: rl_canvas.Canvas, polygon: Polygon,
         c.setStrokeColor(Color(*stroke_color))
 
     do_fill = 1 if fill_color else 0
-    c.drawPath(p, fill=do_fill, stroke=1)
+    do_stroke = 1 if stroke_color and line_width > 0 else 0
+    c.drawPath(p, fill=do_fill, stroke=do_stroke)
 
 
 def draw_geometry(c: rl_canvas.Canvas, geom,
