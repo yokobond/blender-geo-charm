@@ -1,69 +1,15 @@
 """
 都道府県 県境ライン PDF エクスポート補助モジュール
 ====================================================
-県境PDFを生成する Blender Python Script 内部ヘルパーです。
-単独のUIや単独エクスポート機能は持たず、
-prefecture_keychain.py の STL エクスポート時に利用されます。
+県境PDFを生成するBlender Extension Add-on の内部ヘルパーです。
+prefecture_keychain の STL エクスポート時に利用されます。
 
-必要ライブラリ: requests, shapely, reportlab
+依存パッケージは blender_manifest.toml の wheels で管理されます。
 """
-
-import sys
-import os
-
-# Blender スクリプティングタブからの場合は ensure_packages を使う
-_script_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _script_dir)
-
-try:
-    from ensure_packages import ensure_packages
-    ensure_packages(
-        ["requests", "shapely", "reportlab"],
-        script_file=__file__,
-    )
-except Exception as e:
-    print(f"[WARN] ensure_packages 失敗: {e} — すでにインストール済みの場合は無視してください")
-
-# ============================================================
-# 設定
-# ============================================================
-
-# エクスポートしたい都道府県名
-PREFECTURE_NAME = "神奈川県"
-
-# 出力先ディレクトリ (None でホームディレクトリ)
-OUTPUT_DIR = None
-
-# 隣接県も薄い線で描画するか
-DRAW_NEIGHBORS = True
-
-# ページサイズ: "A4" / "A3" / "letter"
-PAGE_SIZE = "A4"
-
-# ページ余白 (mm)
-MARGIN_MM = 15.0
-
-# 線の太さ (pt)
-LINE_WIDTH_TARGET = 1.5    # 対象県の境界線
-LINE_WIDTH_NEIGHBOR = 0.4  # 隣接県の境界線
-
-# 色 (R, G, B) — 0.0〜1.0
-COLOR_TARGET = (0.0, 0.0, 0.0)       # 黒
-COLOR_NEIGHBOR = (0.65, 0.65, 0.65)  # グレー
-# 対象県の塗り潰し色 (None で塗り潰しなし)
-COLOR_FILL = (0.94, 0.96, 1.0)       # 薄い青
-
-# 国土数値情報 GeoJSON (dataofjapan/land)
-GEOJSON_URL = (
-    "https://raw.githubusercontent.com/dataofjapan/land/master/japan.geojson"
-)
-
-# ============================================================
-# 依存ライブラリ
-# ============================================================
 
 import json
 import math
+import os
 import tempfile
 
 import requests
@@ -74,6 +20,28 @@ from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.lib.units import mm
 from reportlab.lib.pagesizes import A4, A3, letter
 from reportlab.lib.colors import Color
+
+
+# ============================================================
+# 設定デフォルト値
+# ============================================================
+
+GEOJSON_URL = (
+    "https://raw.githubusercontent.com/dataofjapan/land/master/japan.geojson"
+)
+
+LINE_WIDTH_TARGET = 1.5
+LINE_WIDTH_NEIGHBOR = 0.4
+
+COLOR_TARGET = (0.0, 0.0, 0.0)
+COLOR_NEIGHBOR = (0.65, 0.65, 0.65)
+COLOR_FILL = (0.94, 0.96, 1.0)
+
+PAGE_SIZES = {
+    "A4": A4,
+    "A3": A3,
+    "LETTER": letter,
+}
 
 
 # ============================================================
@@ -136,18 +104,10 @@ def get_neighbors(features: dict, target_name: str, buffer_deg: float = 0.1) -> 
 # ページサイズ解決
 # ============================================================
 
-PAGE_SIZES = {
-    "A4": A4,
-    "A3": A3,
-    "LETTER": letter,
-    "letter": letter,
-}
-
 def resolve_page_size(size) -> tuple:
     """ページサイズを (幅pt, 高さpt) タプルで返す"""
     if isinstance(size, str):
         return PAGE_SIZES.get(size.upper(), A4)
-    # (幅mm, 高さmm) タプル
     w_mm, h_mm = size
     return (w_mm * mm, h_mm * mm)
 
@@ -159,12 +119,7 @@ def resolve_page_size(size) -> tuple:
 def draw_polygon(c: rl_canvas.Canvas, polygon: Polygon,
                  tx, ty, sx, sy,
                  fill_color=None, stroke_color=(0, 0, 0), line_width=1.0):
-    """
-    Shapely Polygon を reportlab Canvas に描画する。
-
-    tx, ty : データ座標 → ページ座標の平行移動 (pt)
-    sx, sy : スケール (pt/度)
-    """
+    """Shapely Polygon を reportlab Canvas に描画する"""
     if polygon.is_empty:
         return
 
@@ -186,10 +141,9 @@ def draw_polygon(c: rl_canvas.Canvas, polygon: Polygon,
     for interior in polygon.interiors:
         add_ring(interior.coords, move=True)
 
-    # スタイル設定
     c.setLineWidth(line_width)
-    c.setLineCap(1)  # Round cap
-    c.setLineJoin(1) # Round join
+    c.setLineCap(1)
+    c.setLineJoin(1)
     if fill_color:
         c.setFillColor(Color(*fill_color))
     if stroke_color:
@@ -218,11 +172,11 @@ def draw_geometry(c: rl_canvas.Canvas, geom,
 # ============================================================
 
 def export_prefecture_pdf(
-    prefecture_name: str = PREFECTURE_NAME,
+    prefecture_name: str,
     output_dir: str = None,
-    draw_neighbors: bool = DRAW_NEIGHBORS,
-    page_size=PAGE_SIZE,
-    margin_mm: float = MARGIN_MM,
+    draw_neighbors: bool = True,
+    page_size="A4",
+    margin_mm: float = 15.0,
     exact_bounds: tuple = None,
     exact_diameter_mm: float = None,
     line_width_target: float = LINE_WIDTH_TARGET,
@@ -236,7 +190,6 @@ def export_prefecture_pdf(
     Returns:
         出力した PDF のファイルパス
     """
-    # --- データ取得 ---
     geojson = load_geojson()
     features = parse_features(geojson)
 
@@ -252,7 +205,6 @@ def export_prefecture_pdf(
                 features[n]["geometry"] for n in neighbor_names if n in features
             ])
 
-    # --- ページ・描画エリア ---
     if exact_diameter_mm is not None and exact_bounds is not None:
         lon_min, lat_min, lon_max, lat_max = exact_bounds
         page_w_pt = (exact_diameter_mm + 2 * margin_mm) * mm
@@ -268,41 +220,33 @@ def export_prefecture_pdf(
         draw_w_pt = page_w_pt - 2 * margin_pt
         draw_h_pt = page_h_pt - 2 * margin_pt
 
-        # 対象県の地理的 BBox
         minx, miny, maxx, maxy = target_geom.bounds
-        data_w = maxx - minx   # 経度幅 (度)
-        data_h = maxy - miny   # 緯度幅 (度)
+        data_w = maxx - minx
+        data_h = maxy - miny
 
-        # 実距離比補正: 経度1度の実距離 = cos(lat)*111km, 緯度1度 = 111km
         lat_center = (miny + maxy) / 2.0
         lon_scale = math.cos(math.radians(lat_center))
 
-        # スケーリング: アスペクト比を保って描画エリアに収める
-        scale_x = draw_w_pt / (data_w * lon_scale)  # pt / (度*cos補正)
-        scale_y = draw_h_pt / data_h                 # pt / 度
+        scale_x = draw_w_pt / (data_w * lon_scale)
+        scale_y = draw_h_pt / data_h
 
         if scale_x / lon_scale < scale_y:
-            # 横幅いっぱい
-            s = scale_x / lon_scale   # pt/度 (経度)
-            sx = s * lon_scale        # 経度方向 (実距離比補正)
-            sy = s                    # 緯度方向
+            s = scale_x / lon_scale
+            sx = s * lon_scale
+            sy = s
         else:
-            # 縦幅いっぱい
             sy = scale_y
             sx = sy * lon_scale
 
         map_w_pt = data_w * sx
         map_h_pt = data_h * sy
 
-        # 描画エリア中央に配置するオフセット
         ox = margin_pt + (draw_w_pt - map_w_pt) / 2
         oy = margin_pt + (draw_h_pt - map_h_pt) / 2
 
-        # データ座標 → ページ座標 (reportlab: 左下原点)
         tx = -minx * sx + ox
         ty = -miny * sy + oy
 
-    # --- PDF 生成 ---
     if output_dir is None:
         output_dir = os.path.expanduser("~")
     os.makedirs(output_dir, exist_ok=True)
@@ -312,13 +256,11 @@ def export_prefecture_pdf(
 
     c = rl_canvas.Canvas(output_path, pagesize=(page_w_pt, page_h_pt))
     c.setTitle(f"{prefecture_name} 県境")
-    c.setAuthor("export_prefecture_pdf.py")
+    c.setAuthor("Geo Charm Keychain Add-on")
 
-    # 背景 (海)
     c.setFillColor(Color(*color_sea))
     c.rect(0, 0, page_w_pt, page_h_pt, fill=1, stroke=0)
 
-    # 他の陸地 (背面)
     if draw_neighbors:
         for name, data in features.items():
             if name != prefecture_name:
@@ -329,7 +271,6 @@ def export_prefecture_pdf(
                     line_width=LINE_WIDTH_NEIGHBOR,
                 )
 
-    # 対象県 (前面)
     draw_geometry(
         c, target_geom, tx, ty, sx, sy,
         fill_color=color_target,
@@ -340,21 +281,3 @@ def export_prefecture_pdf(
     c.save()
     print(f"\nPDF 出力完了: {output_path}")
     return output_path
-
-
-# このモジュールは prefecture_keychain.py から import して使うヘルパーです。
-# Blender UI の登録は prefecture_keychain.py 側で行います。
-#
-# Blender のスクリプティングタブからこのファイルを直接実行した場合のみ、
-# prefecture_keychain の UI を登録します。
-if __name__ == "__main__":
-    try:
-        import prefecture_keychain as _kc  # type: ignore[import]
-        try:
-            _kc.unregister()
-        except Exception:
-            pass
-        _kc.register()
-        print("[PDF Export] キーホルダーUIを登録しました (3D Viewport > サイドバー > キーホルダー)")
-    except ImportError:
-        pass  # bpy がない通常 Python 実行では何もしない

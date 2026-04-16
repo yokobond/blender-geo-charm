@@ -6,133 +6,55 @@
 
 ---
 
-## アーキテクチャ概要
+## インストール
 
+Blender 4.2 以上の Extension Add-on として動作します。
+外部パッケージ (shapely・requests・reportlab 等) は zip に同梱されており、別途 `pip install` は不要です。
+
+### 1. zip をビルドする
+
+```bash
+# リポジトリのルートで実行
+./build_addon.sh
+# → dist/geo_charm_keychain.zip が生成されます
+
+# wheels を再ダウンロードしたい場合 (バージョン更新時など)
+./build_addon.sh --refresh
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Blender UI パネル「キーホルダー生成」                      │
-│  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐   │
-│  │ 県選択       │  │ 各パラメータ  │  │ 生成/STLボタン │   │
-│  └──────┬──────┘  └──────┬───────┘  └───────┬───────┘   │
-│         └────────────────┴──────────────────┘           │
-│                          │                               │
-│  ┌───────────────────────▼───────────────────────────┐   │
-│  │         KeychainGenerator (オーケストレータ)         │   │
-│  │                                                    │   │
-│  │  ① PrefectureBoundary   ─→ 県境GeoJSON取得         │   │
-│  │     ├ _rasterize() でベクトル化マスク生成            │   │
-│  │     ├ メインマスク / 他の陸地マスク / 海マスク        │   │
-│  │     └ 島検出・分離                                   │   │
-│  │                                                    │   │
-│  │  ② ElevationFetcher     ─→ GSI標高タイル取得        │   │
-│  │     ├ タイル座標計算                                 │   │
-│  │     ├ テキスト形式パース (256x256 CSV)               │   │
-│  │     └ グリッド統合・バイリニアリサンプル               │   │
-│  │                                                    │   │
-│  │  ③ KeychainModelBuilder ─→ Blender 3Dモデル構築     │   │
-│  │     ├ 円形土台 (透明アクリル / Boolean穴付き)         │   │
-│  │     ├ メイン地形メッシュ (底面ソリッド化済み)          │   │
-│  │     ├ 他の陸地の薄い刻印 (0.5mm)                    │   │
-│  │     ├ 海の表示 (0.5mm)                              │   │
-│  │     ├ 島パーツ (別体 / 接着用凹み付き)               │   │
-│  │     └ キーリングプレビュー (トーラス)                 │   │
-│  └────────────────────────────────────────────────────┘   │
-│                          │                               │
-│          STL エクスポート + PDF エクスポート               │
-│          (export_prefecture_pdf.py)                      │
-└─────────────────────────────────────────────────────────┘
-```
+
+### 2. Blender にインストールする
+
+1. Blender を起動
+2. **Edit > Preferences > Extensions** を開く
+3. 右上の **▼ > Install from Disk** をクリック
+4. `dist/geo_charm_keychain.zip` を選択
+5. 一覧に **Geo Charm Keychain** が表示されたら有効化
+
+---
+
+## 使い方
+
+1. 3D Viewport のサイドバー (`N` キー) を開く
+2. **「キーホルダー」** タブを選択
+3. 都道府県・パラメータを設定して **「キーホルダーを生成」** をクリック
+4. 3Dモデルが生成されたら **「STL エクスポート」** で保存先を指定
+
+> STL エクスポート時に同じフォルダへカット用 SVG と県境 PDF が自動出力されます。
+
+---
 
 ## ファイル構成
 
-| ファイル | 役割 |
-|---|---|
-| `prefecture_keychain.py` | Blender UI・3Dモデル生成のメインスクリプト |
-| `export_prefecture_pdf.py` | 県境ラインPDF出力ヘルパー (STLエクスポート時に自動呼び出し) |
-| `ensure_packages.py` | Blender Python 環境へのパッケージ自動インストールユーティリティ |
-
----
-
-## パーツ構成
-
-### 1. 円形土台 (透明アクリル用)
-- 直径: 50mm (調整可能: 30〜100mm)
-- 厚さ: 2mm
-- キーホルダー穴: φ4mm、穴の内側マージン 1mm (調整可能)
-- Boolean Modifier で穴を開ける (Blender 3.x〜5.x の solver 名に自動対応)
-
-### 2. メイン地形 (対象県の立体)
-- 標高データに基づく立体地形
-- 誇張倍率: 1.0〜10.0倍で調整可能 (デフォルト3.0)
-- 他の陸地・海より `main_terrain_offset_mm` (デフォルト2.0mm) 高く底上げ
-- 底面をソリッド化して3Dプリント可能な閉じたメッシュを生成
-
-### 3. 他の陸地の刻印
-- 高さ 0.5mm の薄いレリーフ
-- 対象県の周囲の陸地を表示
-
-### 4. 海の表示
-- 高さ 0.5mm
-- `sea_land_gap_mm` で海マスクを侵食し、陸地との間にアクリルが見える隙間を設定可能 (デフォルト0.0mm)
-
-### 5. 島パーツ (該当する場合)
-- 本土から離れた島は別パーツとして生成 (MultiPolygon の面積順で判定)
-- 底面に接着用の凹み (`island_offset_mm`: デフォルト0.3mm)
-- 面積が本土の 0.1% 未満の極小ポリゴンは除外
-
----
-
-## セットアップ
-
-### 前提条件
-- Blender 3.6 以上 (4.x / 5.x 推奨)
-- インターネット接続 (標高・県境データ初回取得時)
-
-### Blender Python への追加パッケージ
-
-```bash
-# Blender の Python パスを確認 (例: macOS Blender 4.x)
-/Applications/Blender.app/Contents/Resources/4.2/python/bin/python3.11 \
-  -m pip install numpy requests shapely
-
-# Windows の場合
-"C:\Program Files\Blender Foundation\Blender 4.2\4.2\python\bin\python.exe" ^
-  -m pip install numpy requests shapely
 ```
-
-PDF エクスポート機能を使う場合は追加で:
-
-```bash
-pip install reportlab
-```
-
-### 実行方法
-
-1. Blender を起動
-2. **スクリプティング** ワークスペースに切り替え
-3. テキストエディタで `prefecture_keychain.py` を開く
-4. `Alt+P` で実行
-5. サイドバー (`N` キー) の **「キーホルダー」** タブを開く
-6. パラメータを設定して **「キーホルダーを生成」** をクリック
-7. **「STL エクスポート」** でファイルダイアログから保存先を選択
-
-> STL エクスポート時に同じフォルダへ県境PDF (`prefecture_<県名>.pdf`) が自動出力されます。
-
-### コマンドライン / バックグラウンド実行
-
-スクリプト末尾のコメントを解除して実行:
-
-```python
-gen = KeychainGenerator("神奈川県", config={
-    'exaggeration': 3.0,
-    'resolution': 200,
-    'zoom': 10,
-})
-gen.generate()
-```
-
-```bash
-blender --background --python prefecture_keychain.py
+.
+├── geo_charm_keychain/          # Extension Add-on 本体
+│   ├── __init__.py              #   メインロジック・UI
+│   ├── export_prefecture_pdf.py #   PDF出力ヘルパー
+│   ├── blender_manifest.toml   #   Extension メタデータ・wheels 宣言
+│   └── wheels/                 #   バンドル済みパッケージ (.whl)
+├── build_addon.sh               # Add-on zip ビルドスクリプト
+└── dist/                        # ビルド成果物 (gitignore 済み)
+    └── geo_charm_keychain.zip
 ```
 
 ---
@@ -152,7 +74,7 @@ blender --background --python prefecture_keychain.py
 | 解像度 | 200 | 50〜500 | 地形メッシュの分割数 |
 | ズームレベル | 10 | 8〜14 | 標高タイルの精度 |
 
-### ズームレベルと解像度の目安
+### ズームレベルの目安
 
 | ズームレベル | 地上解像度(約) | 適した用途 |
 |---|---|---|
@@ -160,6 +82,31 @@ blender --background --python prefecture_keychain.py
 | 10 | 150m | 標準 (推奨) |
 | 12 | 40m | 高精度・小さい県向け |
 | 14 | 10m | 最高精度 (処理に時間がかかる) |
+
+---
+
+## パーツ構成
+
+### 1. 円形土台 (透明アクリル用)
+- 直径: 50mm (調整可能: 30〜100mm)
+- 厚さ: 2mm
+- キーホルダー穴: φ4mm、穴の内側マージン 1mm (調整可能)
+
+### 2. メイン地形 (対象県の立体)
+- 標高データに基づく立体地形
+- 誇張倍率: 1.0〜10.0倍で調整可能 (デフォルト3.0)
+- 他の陸地・海より `main_terrain_offset_mm` (デフォルト2.0mm) 高く底上げ
+
+### 3. 他の陸地の刻印
+- 高さ 0.5mm の薄いレリーフ
+
+### 4. 海の表示
+- 高さ 0.5mm
+- `sea_land_gap_mm` で陸地との間にアクリルが見える隙間を設定可能
+
+### 5. 島パーツ (該当する場合)
+- 本土から離れた島は別パーツとして生成
+- 底面に接着用の凹み (`island_offset_mm`: デフォルト0.3mm)
 
 ---
 
@@ -173,7 +120,7 @@ blender --background --python prefecture_keychain.py
 ### 透明土台
 - **素材**: 透明レジン or 透明PETG
 - **レイヤー高さ**: 0.1mm (表面品質重視)
-- **代替**: レーザーカットした透明アクリル板 (2mm厚) + STLと同時出力されるPDFを型紙として使用
+- **代替**: レーザーカットした透明アクリル板 (2mm厚) + STLと同時出力される SVG を型紙として使用
 
 ### 組み立て
 1. 透明土台を印刷 / レーザーカット
@@ -187,39 +134,30 @@ blender --background --python prefecture_keychain.py
 
 ## データソース・キャッシュ
 
-- **標高データ**: 国土地理院 地理院タイル 数値標高モデル (DEM10B / DEM5A)
-  - URL: `https://cyberjapandata.gsi.go.jp/xyz/dem/{z}/{x}/{y}.txt`
-  - 256×256 テキスト形式 (カンマ区切り, 単位: m)
-  - 取得済みタイルは `<tmpdir>/gsi_dem_cache/dem_{z}_{x}_{y}.npy` にキャッシュ
+- **標高データ**: 国土地理院 地理院タイル 数値標高モデル (DEM10B)
+  - 取得済みタイルは `<tmpdir>/gsi_dem_cache/` にキャッシュ
 
 - **県境データ**: dataofjapan/land GeoJSON
-  - URL: `https://raw.githubusercontent.com/dataofjapan/land/master/japan.geojson`
   - 取得後 `<tmpdir>/japan_prefectures.geojson` にキャッシュ
 
 ---
 
 ## トラブルシューティング
 
-### 「numpy が必要です」エラー
-→ Blender内蔵のPythonにnumpyをインストールしてください (上記セットアップ参照)
-
-### shapely が見つからない
-→ 県境ポリゴン解析をスキップし、矩形範囲で代替します。精度を出すには `pip install shapely` が必要です。
-
 ### 標高タイルの取得が遅い
 → 解像度・ズームレベルを下げてください。初回取得後はキャッシュが使われます。
 
-### STLエクスポートでエラー
-→ `bpy.ops.wm.stl_export` (Blender 3.3+) を使用しています。古いバージョンでは `ファイル → エクスポート → STL (.stl)` から手動エクスポートしてください。
+### STL エクスポートでエラー
+→ Blender 4.2 以上が必要です。
 
-### PDF が出力されない
-→ `export_prefecture_pdf.py` が同じディレクトリにあること、`reportlab` がインストールされていることを確認してください。
+### PDF / SVG が出力されない
+→ STL エクスポート先のディレクトリへの書き込み権限を確認してください。
 
 ---
 
 ## ライセンス・利用条件
 
-- スクリプト本体: MIT License
+- Add-on 本体: MIT License
 - 標高データ: 国土地理院コンテンツ利用規約に従う
   - 出典明記が必要: 「国土地理院」または「地理院タイル」
   - 詳細: https://www.gsi.go.jp/kikakuchousei/kikakuchousei40182.html

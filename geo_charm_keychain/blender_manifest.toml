@@ -1,0 +1,27 @@
+schema_version = "1.0.0"
+id = "geo_charm_keychain"
+version = "1.0.0"
+name = "Geo Charm Keychain"
+tagline = "都道府県の地形データから3Dキーホルダーモデルを生成"
+maintainer = "Koji Yokokawa <koji.yokokawa@gmail.com>"
+type = "add-on"
+blender_version_min = "4.2.0"
+
+license = ["SPDX:MIT"]
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "*.pyc",
+]
+
+wheels = [
+  "./wheels/certifi-2026.2.25-py3-none-any.whl",
+  "./wheels/charset_normalizer-3.4.7-cp311-cp311-macosx_10_9_universal2.whl",
+  "./wheels/idna-3.11-py3-none-any.whl",
+  "./wheels/pillow-12.2.0-cp311-cp311-macosx_11_0_arm64.whl",
+  "./wheels/reportlab-4.4.10-py3-none-any.whl",
+  "./wheels/requests-2.33.1-py3-none-any.whl",
+  "./wheels/shapely-2.1.2-cp311-cp311-macosx_11_0_arm64.whl",
+  "./wheels/urllib3-2.6.3-py3-none-any.whl",
+]

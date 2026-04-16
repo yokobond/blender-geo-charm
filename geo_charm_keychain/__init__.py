@@ -1,17 +1,14 @@
 """
-都道府県キーホルダー3Dモデル生成スクリプト (Blender Python Script)
-==========================================================
+Geo Charm Keychain - 都道府県キーホルダー3Dモデル生成 Add-on
+=============================================================
 国土地理院の標高タイルデータを利用して、指定した都道府県の
 3Dプリント用キーホルダーモデルを自動生成します。
 
 使い方:
   1. Blender を開く
-  2. スクリプティングワークスペースに切り替え
-  3. このスクリプトを開いて実行 (Alt+P)
-  4. UIパネル「キーホルダー生成」がサイドバー(N)に表示される
-
-必要ライブラリ (Blender Python に追加):
-  pip install requests numpy shapely
+  2. Edit > Preferences > Extensions > Install from Disk でこのフォルダを選択
+  3. Add-on を有効化
+  4. 3D Viewport のサイドバー (N キー) に「キーホルダー」タブが表示される
 
 出典: 国土地理院 地理院タイル (https://maps.gsi.go.jp/development/ichiran.html)
 """
@@ -21,70 +18,48 @@ import bmesh
 import math
 import os
 import json
-import struct
 import tempfile
-from pathlib import Path
 from collections import defaultdict
 
-# ============================================================
-# 外部ライブラリのインポート（Blender Python 環境で必要）
-# ============================================================
-try:
-    import numpy as np
-except ImportError:
-    raise ImportError(
-        "numpy が必要です。Blender の Python で "
-        "'pip install numpy' を実行してください。"
-    )
+import numpy as np
+import requests
+from shapely.geometry import shape, MultiPolygon
+SHAPELY_AVAILABLE = True
 
-try:
-    import requests
-except ImportError:
-    raise ImportError(
-        "requests が必要です。Blender の Python で "
-        "'pip install requests' を実行してください。"
-    )
-
-try:
-    from shapely.geometry import shape, MultiPolygon
-    SHAPELY_AVAILABLE = True
-except ImportError:
-    SHAPELY_AVAILABLE = False
-    print("WARNING: shapely が見つかりません。県境データの自動取得が制限されます。")
+bl_info = {
+    "name": "Geo Charm Keychain",
+    "author": "Koji Yokokawa",
+    "version": (1, 0, 0),
+    "blender": (4, 2, 0),
+    "location": "View3D > Sidebar > キーホルダー",
+    "description": "国土地理院の標高データから都道府県キーホルダー3Dモデルを生成",
+    "category": "Object",
+}
 
 
 # ============================================================
 # 定数・設定
 # ============================================================
 
-# 国土地理院 標高タイル (テキスト形式, DEM10B)
 GSI_DEM_URL = "https://cyberjapandata.gsi.go.jp/xyz/dem/{z}/{x}/{y}.txt"
-# DEM5A (より高精度, 航空レーザ測量)
 GSI_DEM5A_URL = "https://cyberjapandata.gsi.go.jp/xyz/dem5a/{z}/{x}/{y}.txt"
 
-# Natural Earth / 国土数値情報の代替: 簡易県境データ
-# 実運用では国土数値情報の行政区域データ (GeoJSON) を使用推奨
 PREFECTURES_GEOJSON_URL = (
     "https://raw.githubusercontent.com/dataofjapan/land/master/japan.geojson"
 )
 
-# キーホルダー物理サイズ (mm)
-DEFAULT_KEYCHAIN_DIAMETER_MM = 50.0  # 円形土台の直径
-DEFAULT_BASE_THICKNESS_MM = 2.0      # 土台の厚さ
-DEFAULT_TERRAIN_MAX_HEIGHT_MM = 8.0  # 地形の最大高さ
-DEFAULT_HOLE_DIAMETER_MM = 4.0       # キーホルダー穴径
-DEFAULT_HOLE_MARGIN_MM = 3.0         # 穴の中心から縁までの距離
-DEFAULT_NEIGHBOR_THICKNESS_MM = 0.5  # 隣接県/海の薄い刻印の高さ
-DEFAULT_ISLAND_OFFSET_MM = 0.3       # 島パーツの接着しろ凹み
-DEFAULT_MAIN_TERRAIN_OFFSET_MM = 2.0       # メイン地形の追加底上げ高さ
-DEFAULT_BORDER_GROOVE_DEPTH_MM = 1.0       # 県境の溝の深さ (0.0=溝なし)
-
-DEFAULT_MAP_MARGIN_RATIO = 0.3       # マップの余白比率
-
-# ズームレベル (10 ≈ 約150m解像度, 県全体をカバーするのに適切)
+DEFAULT_KEYCHAIN_DIAMETER_MM = 50.0
+DEFAULT_BASE_THICKNESS_MM = 2.0
+DEFAULT_TERRAIN_MAX_HEIGHT_MM = 8.0
+DEFAULT_HOLE_DIAMETER_MM = 4.0
+DEFAULT_HOLE_MARGIN_MM = 3.0
+DEFAULT_NEIGHBOR_THICKNESS_MM = 0.5
+DEFAULT_ISLAND_OFFSET_MM = 0.3
+DEFAULT_MAIN_TERRAIN_OFFSET_MM = 2.0
+DEFAULT_BORDER_GROOVE_DEPTH_MM = 1.0
+DEFAULT_MAP_MARGIN_RATIO = 0.3
 DEFAULT_ZOOM_LEVEL = 10
 
-# 県コード → 名前マッピング (主要なもの)
 PREFECTURE_NAMES = {
     1: "北海道", 2: "青森県", 3: "岩手県", 4: "宮城県", 5: "秋田県",
     6: "山形県", 7: "福島県", 8: "茨城県", 9: "栃木県", 10: "群馬県",
@@ -104,7 +79,6 @@ PREFECTURE_NAMES = {
 # ============================================================
 
 def latlon_to_tile(lat, lon, zoom):
-    """緯度経度 → タイル座標 (x, y)"""
     n = 2 ** zoom
     x = int((lon + 180.0) / 360.0 * n)
     lat_rad = math.radians(lat)
@@ -113,7 +87,6 @@ def latlon_to_tile(lat, lon, zoom):
 
 
 def tile_to_latlon(x, y, zoom):
-    """タイル座標 → 緯度経度 (タイル左上隅)"""
     n = 2 ** zoom
     lon = x / n * 360.0 - 180.0
     lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * y / n)))
@@ -122,7 +95,6 @@ def tile_to_latlon(x, y, zoom):
 
 
 def tile_bounds(x, y, zoom):
-    """タイルの範囲 (lat_max, lon_min, lat_min, lon_max)"""
     lat_max, lon_min = tile_to_latlon(x, y, zoom)
     lat_min, lon_max = tile_to_latlon(x + 1, y + 1, zoom)
     return lat_max, lon_min, lat_min, lon_max
@@ -133,7 +105,6 @@ def tile_bounds(x, y, zoom):
 # ============================================================
 
 class ElevationFetcher:
-    """国土地理院の標高タイルからDEMデータを取得"""
 
     def __init__(self, zoom=DEFAULT_ZOOM_LEVEL, use_dem5a=False, cache_dir=None):
         self.zoom = zoom
@@ -143,18 +114,13 @@ class ElevationFetcher:
         self._tile_cache = {}
 
     def _fetch_tile(self, tx, ty):
-        """1タイル分の標高データ (256x256) を取得"""
         cache_key = (tx, ty, self.zoom)
         if cache_key in self._tile_cache:
             return self._tile_cache[cache_key]
 
-        # ファイルキャッシュ
-        cache_file = os.path.join(
-            self.cache_dir, f"dem_{self.zoom}_{tx}_{ty}.npy"
-        )
+        cache_file = os.path.join(self.cache_dir, f"dem_{self.zoom}_{tx}_{ty}.npy")
         if os.path.exists(cache_file):
             data = np.load(cache_file)
-            # 古いキャッシュに残った異常値も除去
             data[data < -100] = 0.0
             data[data > 8000] = 0.0
             data = np.maximum(data, 0.0)
@@ -167,7 +133,6 @@ class ElevationFetcher:
         try:
             resp = requests.get(url, timeout=30)
             if resp.status_code == 404:
-                # タイルが存在しない → 全て海 (0m)
                 data = np.zeros((256, 256), dtype=np.float32)
                 self._tile_cache[cache_key] = data
                 return data
@@ -178,7 +143,6 @@ class ElevationFetcher:
             self._tile_cache[cache_key] = data
             return data
 
-        # テキスト形式パース: 256行, 各行カンマ区切り256値
         data = np.zeros((256, 256), dtype=np.float32)
         lines = resp.text.strip().split('\n')
         for row_idx, line in enumerate(lines[:256]):
@@ -186,19 +150,15 @@ class ElevationFetcher:
             for col_idx, val in enumerate(values[:256]):
                 val = val.strip()
                 if val == 'e' or val == '':
-                    data[row_idx, col_idx] = 0.0  # 海/データなし
+                    data[row_idx, col_idx] = 0.0
                 else:
                     try:
                         data[row_idx, col_idx] = float(val)
                     except ValueError:
                         data[row_idx, col_idx] = 0.0
 
-        # 異常値フィルタ: -9999や極端な負値 (欠損値マーカー) を0に
         data[data < -100] = 0.0
-        # 日本の最高地点は富士山3776m、8000m超は無効データ
         data[data > 8000] = 0.0
-
-        # マイナス標高を0に (海面下は3Dプリント上不要)
         data = np.maximum(data, 0.0)
 
         np.save(cache_file, data)
@@ -206,18 +166,9 @@ class ElevationFetcher:
         return data
 
     def get_elevation_grid(self, lat_min, lat_max, lon_min, lon_max, resolution=256):
-        """
-        指定範囲の標高グリッドを取得して統合
-
-        Returns:
-            elevations: (resolution, resolution) の標高配列 (m)
-            (actual_lat_min, actual_lat_max, actual_lon_min, actual_lon_max)
-        """
-        # 必要タイルの範囲を計算
         tx_min, ty_max = latlon_to_tile(lat_min, lon_min, self.zoom)
         tx_max, ty_min = latlon_to_tile(lat_max, lon_max, self.zoom)
 
-        # 安全マージン
         tx_min -= 1
         ty_min -= 1
         tx_max += 1
@@ -229,7 +180,6 @@ class ElevationFetcher:
         total_px_x = num_tiles_x * 256
         total_px_y = num_tiles_y * 256
 
-        # 全タイルを結合
         full_grid = np.zeros((total_px_y, total_px_x), dtype=np.float32)
         for ty in range(ty_min, ty_max + 1):
             for tx in range(tx_min, tx_max + 1):
@@ -238,12 +188,9 @@ class ElevationFetcher:
                 ix = (tx - tx_min) * 256
                 full_grid[iy:iy+256, ix:ix+256] = tile_data
 
-        # 実際のタイル範囲の緯度経度
         actual_lat_max, actual_lon_min = tile_to_latlon(tx_min, ty_min, self.zoom)
         actual_lat_min, actual_lon_max = tile_to_latlon(tx_max + 1, ty_max + 1, self.zoom)
 
-        # 指定範囲にクロップ & リサンプル
-        # ピクセル座標に変換
         px_x_min = int((lon_min - actual_lon_min) / (actual_lon_max - actual_lon_min) * total_px_x)
         px_x_max = int((lon_max - actual_lon_min) / (actual_lon_max - actual_lon_min) * total_px_x)
         px_y_min = int((actual_lat_max - lat_max) / (actual_lat_max - actual_lat_min) * total_px_y)
@@ -259,15 +206,11 @@ class ElevationFetcher:
         if cropped.size == 0:
             return np.zeros((resolution, resolution), dtype=np.float32)
 
-        # バイリニア補間でリサンプル
-        from numpy import interp
-        # 行方向リサンプル
         rows_resampled = np.zeros((resolution, cropped.shape[1]), dtype=np.float32)
         src_rows = np.linspace(0, cropped.shape[0] - 1, resolution)
         for c in range(cropped.shape[1]):
             rows_resampled[:, c] = np.interp(src_rows, np.arange(cropped.shape[0]), cropped[:, c])
 
-        # 列方向リサンプル
         result = np.zeros((resolution, resolution), dtype=np.float32)
         src_cols = np.linspace(0, rows_resampled.shape[1] - 1, resolution)
         for r in range(resolution):
@@ -281,7 +224,6 @@ class ElevationFetcher:
 # ============================================================
 
 class PrefectureBoundary:
-    """都道府県の境界ポリゴンを取得・管理"""
 
     def __init__(self, geojson_path=None):
         self.features = {}
@@ -289,10 +231,7 @@ class PrefectureBoundary:
         self._geojson_path = geojson_path
 
     def load_from_url(self, url=PREFECTURES_GEOJSON_URL):
-        """GeoJSON をURLからダウンロード"""
-        cache_file = os.path.join(
-            tempfile.gettempdir(), "japan_prefectures.geojson"
-        )
+        cache_file = os.path.join(tempfile.gettempdir(), "japan_prefectures.geojson")
         if os.path.exists(cache_file):
             print("県境データ: キャッシュから読み込み")
             with open(cache_file, 'r', encoding='utf-8') as f:
@@ -308,20 +247,17 @@ class PrefectureBoundary:
         self._parse_features()
 
     def load_from_file(self, filepath):
-        """ローカルの GeoJSON ファイルから読み込み"""
         with open(filepath, 'r', encoding='utf-8') as f:
             self._geojson_data = json.load(f)
         self._parse_features()
 
     def _parse_features(self):
-        """GeoJSON の Feature を県名で辞書化"""
         if not SHAPELY_AVAILABLE:
             print("WARNING: shapely がないため県境ポリゴンの解析をスキップ")
             return
 
         for feat in self._geojson_data.get('features', []):
             props = feat.get('properties', {})
-            # dataofjapan/land の場合: "nam_ja" キー
             name = props.get('nam_ja') or props.get('N03_001') or props.get('name')
             if name:
                 geom = shape(feat['geometry'])
@@ -331,17 +267,14 @@ class PrefectureBoundary:
                 }
 
     def get_prefecture_polygon(self, name):
-        """県名からポリゴンを取得"""
         if name in self.features:
             return self.features[name]['geometry']
-        # 部分一致
         for key, val in self.features.items():
             if name in key or key in name:
                 return val['geometry']
         return None
 
     def get_neighbor_prefectures(self, target_name, buffer_deg=0.1):
-        """ターゲット県に隣接する県のリストを取得"""
         target = self.get_prefecture_polygon(target_name)
         if target is None:
             return []
@@ -357,30 +290,21 @@ class PrefectureBoundary:
         return neighbors
 
     def get_bounds(self, name):
-        """県のバウンディングボックス (lon_min, lat_min, lon_max, lat_max)"""
         poly = self.get_prefecture_polygon(name)
         if poly is None:
             return None
-        return poly.bounds  # (minx, miny, maxx, maxy) = (lon_min, lat_min, lon_max, lat_max)
+        return poly.bounds
 
     @staticmethod
     def _rasterize(geom, resolution, lon_min, lat_min, lon_max, lat_max) -> np.ndarray:
-        """
-        Shapely ジオメトリをラスタライズして (resolution, resolution) の float32 マスクを返す。
-        geom の内側 = 1.0、外側 = 0.0。
-
-        shapely.vectorized.contains を使い、全ピクセルを一括判定する。
-        これにより O(N²) の Python ループを C 拡張の単一呼び出しに置き換える。
-        """
         try:
             from shapely.vectorized import contains as vec_contains
         except ImportError:
-            # shapely < 1.8 などフォールバック: 行単位ループ
             from shapely.prepared import prep
             from shapely.geometry import Point as _Point
             prepared = prep(geom)
             lons = np.linspace(lon_min, lon_max, resolution)
-            lats = np.linspace(lat_max, lat_min, resolution)  # 北→南
+            lats = np.linspace(lat_max, lat_min, resolution)
             mask = np.zeros((resolution, resolution), dtype=np.float32)
             for iy, lat in enumerate(lats):
                 for ix, lon in enumerate(lons):
@@ -389,23 +313,18 @@ class PrefectureBoundary:
             return mask
 
         lons = np.linspace(lon_min, lon_max, resolution)
-        lats = np.linspace(lat_max, lat_min, resolution)  # 北→南 (行 0 = 最北)
-        lon_grid, lat_grid = np.meshgrid(lons, lats)       # 各 (resolution, resolution)
+        lats = np.linspace(lat_max, lat_min, resolution)
+        lon_grid, lat_grid = np.meshgrid(lons, lats)
         inside = vec_contains(geom, lon_grid.ravel(), lat_grid.ravel())
         return inside.reshape(resolution, resolution).astype(np.float32)
 
     def create_mask(self, name, resolution, lon_min, lat_min, lon_max, lat_max):
-        """
-        県の形状マスク (resolution x resolution) を生成
-        県内 = 1.0, 県外 = 0.0
-        """
         poly = self.get_prefecture_polygon(name)
         if poly is None:
             return np.ones((resolution, resolution), dtype=np.float32)
         return self._rasterize(poly, resolution, lon_min, lat_min, lon_max, lat_max)
 
     def create_other_land_mask(self, target_name, resolution, lon_min, lat_min, lon_max, lat_max):
-        """対象県以外の日本の陸地領域マスク"""
         from shapely.ops import unary_union
         other_union = unary_union([
             data['geometry'] for name, data in self.features.items()
@@ -413,23 +332,16 @@ class PrefectureBoundary:
         ])
         return self._rasterize(other_union, resolution, lon_min, lat_min, lon_max, lat_max)
 
-
     def detect_islands(self, name):
-        """
-        県のポリゴンから島 (本土から離れた部分) を検出
-        Returns: (main_polygon, [island_polygons])
-        """
         poly = self.get_prefecture_polygon(name)
         if poly is None:
             return None, []
 
         if isinstance(poly, MultiPolygon):
             parts = list(poly.geoms)
-            # 面積最大を本土とする
             parts.sort(key=lambda p: p.area, reverse=True)
             main = parts[0]
             islands = parts[1:]
-            # 極小ポリゴンは除外
             islands = [isl for isl in islands if isl.area > main.area * 0.001]
             return main, islands
         else:
@@ -441,7 +353,6 @@ class PrefectureBoundary:
 # ============================================================
 
 class KeychainModelBuilder:
-    """Blender上にキーホルダー3Dモデルを構築"""
 
     def __init__(self, config=None):
         self.config = config or {}
@@ -449,51 +360,40 @@ class KeychainModelBuilder:
         self.base_thickness = self.config.get('base_thickness_mm', DEFAULT_BASE_THICKNESS_MM)
         self.terrain_max_height = self.config.get('terrain_max_height_mm', DEFAULT_TERRAIN_MAX_HEIGHT_MM)
         self.hole_diameter = self.config.get('hole_diameter_mm', DEFAULT_HOLE_DIAMETER_MM)
-        
-        # 指定された穴の内側マージンから、中心から縁までの距離を計算
+
         hole_inner_margin = self.config.get('hole_inner_margin_mm', 1.0)
         self.hole_margin = hole_inner_margin + (self.hole_diameter / 2.0)
-        
+
         self.neighbor_thickness = self.config.get('neighbor_thickness_mm', DEFAULT_NEIGHBOR_THICKNESS_MM)
         self.island_offset = self.config.get('island_offset_mm', DEFAULT_ISLAND_OFFSET_MM)
         self.main_terrain_offset = self.config.get('main_terrain_offset_mm', DEFAULT_MAIN_TERRAIN_OFFSET_MM)
         self.exaggeration = self.config.get('exaggeration', 2.0)
 
-        # Blender では 1 unit = 1mm と扱う (3Dプリント向け)
-        self.scale_factor = 0.001  # mm → m (Blender内部単位)
-        self.ground_size_m = 0.0  # マップ範囲の実距離(m)、generate()内で設定される
+        self.scale_factor = 0.001
+        self.ground_size_m = 0.0
 
     def clear_scene(self):
-        """シーン内の既存オブジェクトをクリア"""
         bpy.ops.object.select_all(action='SELECT')
         bpy.ops.object.delete(use_global=False)
 
-        # コレクション整理
         for col in bpy.data.collections:
             if col.name.startswith("Keychain"):
                 bpy.data.collections.remove(col)
 
     def _create_collection(self, name):
-        """Blenderコレクションを作成"""
         col = bpy.data.collections.new(name)
         bpy.context.scene.collection.children.link(col)
         return col
 
     def build_circular_base(self, collection):
-        """
-        円形の透明アクリル土台を生成
-        - キーホルダー穴付き
-        """
         sf = self.scale_factor
         radius = self.diameter_mm / 2.0 * sf
         thickness = self.base_thickness * sf
         hole_r = self.hole_diameter / 2.0 * sf
         hole_center_offset = radius - self.hole_margin * sf
 
-        # アクリル上面 = Z=0、地形底面 = Z=base_thickness*sf なので交差しない
         base_center_z = -thickness / 2
 
-        # 円柱 (土台)
         bpy.ops.mesh.primitive_cylinder_add(
             radius=radius,
             depth=thickness,
@@ -503,10 +403,9 @@ class KeychainModelBuilder:
         base = bpy.context.active_object
         base.name = "Base_Acrylic"
 
-        # キーホルダー穴 (Boolean差し引き用シリンダー)
         bpy.ops.mesh.primitive_cylinder_add(
             radius=hole_r,
-            depth=thickness * 10,  # 地形も貫通させるために十分に長くする
+            depth=thickness * 10,
             location=(0, hole_center_offset, 0),
             vertices=64
         )
@@ -516,13 +415,9 @@ class KeychainModelBuilder:
         hole.hide_render = True
         self.hole_cutter = hole
 
-        # Boolean Modifier で穴を開ける (独立オブジェクトとして残すため適用しない)
         bool_mod = base.modifiers.new(name="Hole", type='BOOLEAN')
         bool_mod.operation = 'DIFFERENCE'
         bool_mod.object = hole
-        # Blender バージョンで solver 名が異なる:
-        #   4.5+: FLOAT / EXACT / MANIFOLD
-        #   3.x-4.4: FAST / EXACT
         for solver_name in ('EXACT', 'FLOAT', 'FAST'):
             try:
                 bool_mod.solver = solver_name
@@ -530,26 +425,22 @@ class KeychainModelBuilder:
             except TypeError:
                 continue
 
-        # カッターオブジェクトをコレクションに移動
         for c in hole.users_collection:
             c.objects.unlink(hole)
         collection.objects.link(hole)
 
-        # 透明アクリルマテリアル
         mat = bpy.data.materials.new(name="Acrylic_Clear")
         mat.use_nodes = True
         nodes = mat.node_tree.nodes
         links = mat.node_tree.links
         nodes.clear()
 
-        # Principled BSDF
         output = nodes.new('ShaderNodeOutputMaterial')
         bsdf = nodes.new('ShaderNodeBsdfPrincipled')
         bsdf.inputs['Base Color'].default_value = (0.95, 0.97, 1.0, 1.0)
         bsdf.inputs['Alpha'].default_value = 0.15
         bsdf.inputs['Roughness'].default_value = 0.05
-        bsdf.inputs['IOR'].default_value = 1.49  # アクリル
-        # Transmission は Principled BSDF v4.0+ で名称変更の可能性
+        bsdf.inputs['IOR'].default_value = 1.49
         try:
             bsdf.inputs['Transmission Weight'].default_value = 0.9
         except KeyError:
@@ -562,7 +453,6 @@ class KeychainModelBuilder:
         mat.blend_method = 'BLEND' if hasattr(mat, 'blend_method') else None
         base.data.materials.append(mat)
 
-        # コレクションに移動
         for c in base.users_collection:
             c.objects.unlink(base)
         collection.objects.link(base)
@@ -573,26 +463,13 @@ class KeychainModelBuilder:
                            name="Terrain_Main", height_scale=None,
                            material_color=(0.4, 0.35, 0.28, 1.0),
                            z_offset_mm=0.0):
-        """
-        標高グリッドから地形メッシュを生成
-
-        Args:
-            elevations: (N, N) 標高データ (m)
-            mask: (N, N) 県マスク (1=県内, 0=県外)
-            collection: Blender コレクション
-            name: オブジェクト名
-            height_scale: 高さスケール (Noneなら自動計算)
-            material_color: マテリアルの基本色
-        """
         sf = self.scale_factor
         radius = self.diameter_mm / 2.0 * sf
         resolution = elevations.shape[0]
 
-        # 標高の正規化: マスク内の値を使い、外れ値を95パーセンタイルでクランプ
         masked_vals = elevations[mask > 0.5]
         if masked_vals.size > 0 and masked_vals.max() > 0:
             elev_max = float(np.percentile(masked_vals, 95))
-            # 外れ値クランプ: 95パーセンタイルを超える値を上限に揃える
             elevations = np.clip(elevations, 0.0, elev_max * 1.5)
         else:
             elev_max = float(elevations.max())
@@ -601,39 +478,31 @@ class KeychainModelBuilder:
 
         if height_scale is None:
             if hasattr(self, 'ground_size_m') and self.ground_size_m > 0:
-                # 実スケールに基づく高さ計算 (exaggeration=1.0で現実と同じ比率)
                 height_scale = (self.diameter_mm * sf / self.ground_size_m) * self.exaggeration
             else:
                 height_scale = self.terrain_max_height * sf * self.exaggeration / elev_max
 
-        # メッシュ作成
         mesh = bpy.data.meshes.new(name)
         obj = bpy.data.objects.new(name, mesh)
         collection.objects.link(obj)
 
         bm = bmesh.new()
 
-        # 頂点作成: グリッドを円形にマッピング
         verts = {}
         for iy in range(resolution):
             for ix in range(resolution):
-                # 正規化座標 [-1, 1]
                 nx = (ix / (resolution - 1)) * 2.0 - 1.0
                 ny = (iy / (resolution - 1)) * 2.0 - 1.0
 
-                # 円内のみ
                 dist = math.sqrt(nx * nx + ny * ny)
                 if dist > 1.0:
                     continue
 
-                # マスクチェック
                 if mask[iy, ix] < 0.5:
                     continue
 
-                # 位置 (円形にフィット)
-                # 地形をアクリル上面(Z=0)の真上に載せる
                 x = nx * radius
-                y = -ny * radius  # Y反転 (北が上)
+                y = -ny * radius
                 z = (z_offset_mm * sf) + elevations[iy, ix] * height_scale
 
                 v = bm.verts.new((x, y, z))
@@ -641,7 +510,6 @@ class KeychainModelBuilder:
 
         bm.verts.ensure_lookup_table()
 
-        # 面作成 (四角形 → 三角形分割)
         for iy in range(resolution - 1):
             for ix in range(resolution - 1):
                 v00 = verts.get((ix, iy))
@@ -663,11 +531,8 @@ class KeychainModelBuilder:
         bm.to_mesh(mesh)
         bm.free()
 
-        # 底面を追加してソリッドにする (3Dプリント用)
-        # アクリル上面(Z=0)を底とする
         self._add_solid_bottom(obj, target_z=0.0)
 
-        # 穴カッターで地形もくり抜く
         if hasattr(self, 'hole_cutter') and self.hole_cutter:
             bool_mod = obj.modifiers.new(name="Hole", type='BOOLEAN')
             bool_mod.operation = 'DIFFERENCE'
@@ -679,7 +544,6 @@ class KeychainModelBuilder:
                 except TypeError:
                     continue
 
-        # マテリアル
         mat = bpy.data.materials.new(name=f"Material_{name}")
         mat.use_nodes = True
         nodes = mat.node_tree.nodes
@@ -692,11 +556,7 @@ class KeychainModelBuilder:
         return obj
 
     def build_other_land_engraving(self, elevations, mask, collection, z_offset_mm=0.0):
-        """
-        他の陸地の部分 (海と陸の隙間を見せるため、適度な厚みを持たせる)
-        """
         color = self.config.get('pdf_color_land', (0.1, 0.8, 0.2, 1.0))
-        # アクリルベースが見えるように十分な厚み(0.5mm)を出す
         flat_elevations = np.full_like(elevations, 0.5)
         return self.build_terrain_mesh(
             flat_elevations, mask, collection,
@@ -707,14 +567,9 @@ class KeychainModelBuilder:
         )
 
     def build_sea_indication(self, elevations, sea_mask, collection, z_offset_mm=0.0):
-        """
-        海の領域を表示 (アクリルベースが見えるように適度な厚みを持たせる)
-        """
         sf = self.scale_factor
         color = self.config.get('pdf_color_sea', (0.0, 0.5, 1.0, 1.0))
-        # アクリルベースが見えるように十分な厚み(0.5mm)を出す
         flat_sea = np.full_like(elevations, 0.5)
-
         return self.build_terrain_mesh(
             flat_sea, sea_mask, collection,
             name="Sea_Surface",
@@ -724,9 +579,6 @@ class KeychainModelBuilder:
         )
 
     def build_island_piece(self, elevations, island_mask, collection, island_idx=0, z_offset_mm=0.0):
-        """
-        島パーツ (別体として生成、接着用の凹みつき)
-        """
         name = f"Island_{island_idx}"
         color = self.config.get('pdf_color_target', (1.0, 0.8, 0.0, 1.0))
         obj = self.build_terrain_mesh(
@@ -736,31 +588,24 @@ class KeychainModelBuilder:
             z_offset_mm=z_offset_mm
         )
 
-        # 接着面の凹みマーカー (底面を少し下に伸ばす)
-        # _add_solid_bottomでZ=0になっている底面を、設定値だけ下げる(アクリルに埋まるように)
         if obj and obj.data.vertices:
             bpy.context.view_layer.objects.active = obj
             bpy.ops.object.mode_set(mode='EDIT')
             bm = bmesh.from_edit_mesh(obj.data)
-            
-            # 底面頂点（Z=0）を island_offset 分だけ下げる
+
             sf = self.scale_factor
             bottom_z = 0.0
             island_z = -self.island_offset * sf
             for v in bm.verts:
                 if abs(v.co.z - bottom_z) < 1e-5:
                     v.co.z = island_z
-                    
+
             bmesh.update_edit_mesh(obj.data)
             bpy.ops.object.mode_set(mode='OBJECT')
 
         return obj
 
     def _add_solid_bottom(self, obj, target_z=0.0):
-        """
-        メッシュの底面を閉じてソリッド化 (3Dプリント用)
-        全面を下方に押し出し、新しい頂点を target_z に揃えて底面を作る。
-        """
         if not obj.data.vertices:
             return
 
@@ -772,16 +617,13 @@ class KeychainModelBuilder:
             bpy.ops.object.mode_set(mode='OBJECT')
             return
 
-        # 全面を押し出し → 側壁と底面コピーが生成される
         extrude_res = bmesh.ops.extrude_face_region(bm, geom=bm.faces[:])
 
-        # 押し出しで生成された新頂点を target_z に移動
         new_verts = [e for e in extrude_res['geom'] if isinstance(e, bmesh.types.BMVert)]
         new_faces = [e for e in extrude_res['geom'] if isinstance(e, bmesh.types.BMFace)]
         for v in new_verts:
             v.co.z = target_z
 
-        # 底面の法線を下向きに反転
         bmesh.ops.reverse_faces(bm, faces=new_faces)
         bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
 
@@ -789,7 +631,6 @@ class KeychainModelBuilder:
         bpy.ops.object.mode_set(mode='OBJECT')
 
     def add_keychain_ring_preview(self, collection):
-        """キーリングのプレビュー用トーラス"""
         sf = self.scale_factor
         radius = self.diameter_mm / 2.0 * sf
         hole_center_y = radius - self.hole_margin * sf
@@ -825,7 +666,6 @@ class KeychainModelBuilder:
 # ============================================================
 
 class KeychainGenerator:
-    """全体を統括するジェネレータ"""
 
     def __init__(self, prefecture_name="神奈川県", config=None):
         self.prefecture_name = prefecture_name
@@ -843,14 +683,6 @@ class KeychainGenerator:
         })
 
     def _compute_bounds(self):
-        """
-        県のバウンディングボックスを計算して返す。
-        マージン追加・1:1 アスペクト比補正済み。
-
-        Returns:
-            (lon_min, lat_min, lon_max, lat_max, span)
-            span: 実距離換算の緯度幅 (度)。ground_size_m の計算に使う。
-        """
         bounds = self.boundary.get_bounds(self.prefecture_name)
         if bounds:
             lon_min, lat_min, lon_max, lat_max = bounds
@@ -860,7 +692,6 @@ class KeychainGenerator:
             lon_max += margin
             lat_max += margin
         else:
-            # 神奈川県のデフォルト座標
             lat_min, lat_max = 35.12, 35.67
             lon_min, lon_max = 138.91, 139.79
             margin = 0.15 * (self.margin_ratio / 0.3)
@@ -869,7 +700,6 @@ class KeychainGenerator:
             lon_max += margin
             lat_max += margin
 
-        # アスペクト比を1:1に調整 (円形土台のため)
         lat_center = (lat_min + lat_max) / 2
         lon_center = (lon_min + lon_max) / 2
         span = max(lat_max - lat_min, (lon_max - lon_min) * math.cos(math.radians(lat_center)))
@@ -882,18 +712,15 @@ class KeychainGenerator:
         return lon_min, lat_min, lon_max, lat_max, span
 
     def generate(self):
-        """キーホルダーモデルを生成"""
         print(f"\n{'='*60}")
         print(f"  キーホルダー生成: {self.prefecture_name}")
         print(f"  標高誇張: {self.exaggeration}倍")
         print(f"  解像度: {self.resolution}x{self.resolution}")
         print(f"{'='*60}\n")
 
-        # 1. シーンクリア
         print("[1/7] シーンをクリア中...")
         self.builder.clear_scene()
 
-        # 2. 県境データ取得
         print("[2/7] 県境データを取得中...")
         try:
             self.boundary.load_from_url()
@@ -901,16 +728,13 @@ class KeychainGenerator:
             print(f"  県境データ取得失敗: {e}")
             print("  → 矩形範囲で代替します")
 
-        # 3. 県のバウンディングボックスを取得
         print("[3/7] 対象県の範囲を計算中...")
         lon_min, lat_min, lon_max, lat_max, span = self._compute_bounds()
 
-        # 現実のサイズ (m)
         self.builder.ground_size_m = span * 111000
 
         print(f"  範囲: lat=[{lat_min:.4f}, {lat_max:.4f}], lon=[{lon_min:.4f}, {lon_max:.4f}]")
 
-        # 4. 標高データ取得
         print("[4/7] 標高データを取得中...")
         elevations = self.fetcher.get_elevation_grid(
             lat_min, lat_max, lon_min, lon_max,
@@ -918,7 +742,6 @@ class KeychainGenerator:
         )
         print(f"  標高範囲: {elevations.min():.1f}m 〜 {elevations.max():.1f}m")
 
-        # 5. マスク生成
         print("[5/7] 県境マスクを生成中...")
         if SHAPELY_AVAILABLE and self.boundary.features:
             main_mask = self.boundary.create_mask(
@@ -929,17 +752,11 @@ class KeychainGenerator:
                 self.prefecture_name, self.resolution,
                 lon_min, lat_min, lon_max, lat_max
             )
-            # 海マスク: 対象県でも他の陸地でもない
             sea_mask = np.ones_like(main_mask)
             sea_mask[main_mask > 0.5] = 0
             sea_mask[other_land_mask > 0.5] = 0
-            
-            # 海マスクを侵食して、海の縁を陸から離す
-            # sea_land_gap_mm 分だけ海マスクをerodeすることで、
-            # 海が陸地の縁から離れ、間にアクリル土台が見える隙間ができる
+
             gap_mm = self.config.get('sea_land_gap_mm', 0.0)
-            # 1ピクセルがキーホルダー上で何mmに相当するか
-            # グリッド(resolution×resolution)はキーホルダー直径(diameter_mm)にマッピングされる
             pixel_size_mm = self.builder.diameter_mm / self.resolution
             gap_px = max(1, int(round(gap_mm / pixel_size_mm))) if gap_mm > 0 else 0
 
@@ -956,10 +773,8 @@ class KeychainGenerator:
                     t = nt
                 return t
 
-            # 海マスクをerodeして陸地との間に隙間を作る（陸地マスクは変更しない）
             sea_mask = _erode(sea_mask, gap_px)
 
-            # 円形にクリップ
             for iy in range(self.resolution):
                 for ix in range(self.resolution):
                     nx = (ix / (self.resolution - 1)) * 2.0 - 1.0
@@ -968,42 +783,33 @@ class KeychainGenerator:
                         sea_mask[iy, ix] = 0
                         other_land_mask[iy, ix] = 0
         else:
-            # shapely なしの場合: 全域を地形として表示
             main_mask = np.ones((self.resolution, self.resolution), dtype=np.float32)
             other_land_mask = np.zeros_like(main_mask)
             sea_mask = np.zeros_like(main_mask)
 
-        # 6. Blenderモデル構築
         print("[6/7] 3Dモデルを構築中...")
         col = self.builder._create_collection(f"Keychain_{self.prefecture_name}")
 
-        # 土台
         print("  → 円形土台...")
         base = self.builder.build_circular_base(col)
 
-        # メイン地形の追加底上げ量
         main_terrain_offset_value = self.config.get('main_terrain_offset_mm', DEFAULT_MAIN_TERRAIN_OFFSET_MM)
-        
-        # 海や隣接県は Z=0 の基準に合わせる
+
         base_z_offset = 0.0
         main_z_offset = base_z_offset + main_terrain_offset_value
 
-        # メイン地形
         print("  → メイン地形...")
         color_target = self.config.get('pdf_color_target', (1.0, 0.8, 0.0, 1.0))
         terrain = self.builder.build_terrain_mesh(elevations, main_mask, col, z_offset_mm=main_z_offset, material_color=color_target)
 
-        # 他の陸地の薄い刻印
         if other_land_mask.max() > 0:
             print("  → 他の陸地の表示...")
             self.builder.build_other_land_engraving(elevations, other_land_mask, col, z_offset_mm=base_z_offset)
 
-        # 海の表示
         if sea_mask.max() > 0:
             print("  → 海の表示...")
             self.builder.build_sea_indication(elevations, sea_mask, col, z_offset_mm=base_z_offset)
 
-        # 島の分離
         if SHAPELY_AVAILABLE and self.boundary.features:
             main_poly, islands = self.boundary.detect_islands(self.prefecture_name)
             if islands:
@@ -1018,10 +824,8 @@ class KeychainGenerator:
                             elevations, island_mask, col, island_idx=idx, z_offset_mm=main_z_offset
                         )
 
-        # キーリングプレビュー
         self.builder.add_keychain_ring_preview(col)
 
-        # 7. ビュー設定
         print("[7/7] ビューを設定中...")
         self._setup_viewport()
 
@@ -1034,8 +838,6 @@ class KeychainGenerator:
         return col
 
     def _setup_viewport(self):
-        """3Dビューポートの設定"""
-        # カメラを上から見下ろす位置に
         for area in bpy.context.screen.areas:
             if area.type == 'VIEW_3D':
                 for space in area.spaces:
@@ -1048,92 +850,76 @@ class KeychainGenerator:
                 break
 
     def _export_cut_svg(self, svg_path, lon_min, lat_min, lon_max, lat_max):
-        """県境と土台輪郭のみのカット用SVGを保存"""
         d_mm = self.builder.diameter_mm
         w_mm, h_mm = d_mm, d_mm
-        
-        # 縮尺計算
+
         sx = w_mm / (lon_max - lon_min)
         sy = h_mm / (lat_max - lat_min)
 
         def proj_x(lon):
             return (lon - lon_min) * sx
-            
+
         def proj_y(lat):
             return (lat_max - lat) * sy
 
         parts = []
-        
-        # SVG Header (線幅や色などをレーザーカッター用に赤の極細線とする)
+
         parts.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w_mm:.3f} {h_mm:.3f}" width="{w_mm}mm" height="{h_mm}mm">')
         style = 'fill="none" stroke="red" stroke-width="0.5"'
-        
-        # 1. ジオメトリ(県境)
+
         if SHAPELY_AVAILABLE:
             poly = self.boundary.get_prefecture_polygon(self.prefecture_name)
-            
+
             def add_polygon(p):
-                # exterior
                 path_data = []
                 coords = list(p.exterior.coords)
                 for i, (lon, lat) in enumerate(coords):
                     cmd = "M" if i == 0 else "L"
                     path_data.append(f"{cmd} {proj_x(lon):.3f} {proj_y(lat):.3f}")
                 path_data.append("Z")
-                
-                # interiors
+
                 for interior in p.interiors:
                     icoords = list(interior.coords)
                     for i, (lon, lat) in enumerate(icoords):
                         cmd = "M" if i == 0 else "L"
                         path_data.append(f"{cmd} {proj_x(lon):.3f} {proj_y(lat):.3f}")
                     path_data.append("Z")
-                
+
                 d_str = " ".join(path_data)
                 parts.append(f'  <path d="{d_str}" {style} />')
-                
+
             if poly:
-                from shapely.geometry import Polygon, MultiPolygon
-                if isinstance(poly, Polygon):
+                from shapely.geometry import Polygon as _Polygon, MultiPolygon as _MultiPolygon
+                if isinstance(poly, _Polygon):
                     add_polygon(poly)
-                elif isinstance(poly, MultiPolygon):
+                elif isinstance(poly, _MultiPolygon):
                     for geom in poly.geoms:
                         add_polygon(geom)
-        
-        # 2. 土台外枠 (円)
+
         rad = d_mm / 2.0
         parts.append(f'  <circle cx="{rad:.3f}" cy="{rad:.3f}" r="{rad:.3f}" {style} />')
-        
-        # 3. キーチェーン穴
+
         hole_r = self.builder.hole_diameter / 2.0
-        # 穴はBlender上 +Y (北) 方向にある: SVGではYは上が0のシステム
         hole_cy = rad - (rad - self.builder.hole_margin)
         parts.append(f'  <circle cx="{rad:.3f}" cy="{hole_cy:.3f}" r="{hole_r:.3f}" {style} />')
-        
+
         parts.append('</svg>')
-        
+
         with open(svg_path, 'w', encoding='utf-8') as f:
             f.write("\n".join(parts))
 
     def export_stl(self, filepath=None):
-        """STL ファイルにエクスポート"""
-        import os
-        import sys
-        import bpy
-        
         if filepath is None:
             filepath = os.path.join(
                 os.path.expanduser("~"),
                 f"keychain_{self.prefecture_name}.stl"
             )
 
-        # ユーザーがディレクトリのみを選択し、ファイル名が空の場合に対処
         if os.path.isdir(filepath):
             filepath = os.path.join(filepath, f"keychain_{self.prefecture_name}.stl")
         elif not filepath.lower().endswith(".stl"):
             filepath += ".stl"
 
-        # メインパーツのみ選択 (View Layer に属するオブジェクトのみ)
         bpy.ops.object.select_all(action='DESELECT')
         view_layer_objects = bpy.context.view_layer.objects
         for obj in view_layer_objects:
@@ -1148,10 +934,8 @@ class KeychainGenerator:
         )
         print(f"STL エクスポート完了: {filepath}")
 
-        # --- STLと同じディレクトリに土台用PDFをエクスポートする ---
         output_dir = os.path.dirname(filepath)
-        
-        # URLから直接ダウンロードできない場合は、ローカルのキャッシュから読み込みを試みる
+
         try:
             self.boundary.load_from_url()
         except Exception:
@@ -1159,7 +943,6 @@ class KeychainGenerator:
 
         lon_min, lat_min, lon_max, lat_max, _ = self._compute_bounds()
 
-        # --- SVG出力 ---
         print(f"  → 土台用SVGを {output_dir} にエクスポート中...")
         try:
             svg_filename = f"{self.prefecture_name}_cut.svg"
@@ -1171,22 +954,8 @@ class KeychainGenerator:
 
         print(f"  → 土台用PDFを {output_dir} にエクスポート中...")
         try:
-            # 外部スクリプトをインポートできるようにディレクトリをパスに追加
-            script_dir = ""
-            if "__file__" in globals():
-                script_dir = os.path.dirname(os.path.abspath(__file__))
-            else:
-                # Blenderのテキストエディタから実行されている場合への対応
-                for text in bpy.data.texts:
-                    if text.name == "prefecture_keychain.py" and text.filepath:
-                        script_dir = os.path.dirname(bpy.path.abspath(text.filepath))
-                        break
-            
-            if script_dir and script_dir not in sys.path:
-                sys.path.insert(0, script_dir)
-                
-            from export_prefecture_pdf import export_prefecture_pdf
-            pdf_path = export_prefecture_pdf(
+            from . import export_prefecture_pdf as _pdf_mod
+            pdf_path = _pdf_mod.export_prefecture_pdf(
                 prefecture_name=self.prefecture_name,
                 output_dir=output_dir,
                 margin_mm=1.0,
@@ -1198,14 +967,12 @@ class KeychainGenerator:
                 color_target=self.config.get('pdf_color_target', (1.0, 1.0, 0.0))
             )
             print(f"  → PDF出力完了: {pdf_path}")
-        except ImportError:
-            print("  → export_prefecture_pdf.py が見つからなかったため、PDF出力をスキップしました。")
         except Exception as e:
             print(f"  → PDF出力エラー: {e}")
 
 
 # ============================================================
-# Blender UIパネル (オプション)
+# Blender UIパネル
 # ============================================================
 
 class KEYCHAIN_PT_MainPanel(bpy.types.Panel):
@@ -1222,10 +989,8 @@ class KEYCHAIN_PT_MainPanel(bpy.types.Panel):
         layout.label(text="都道府県キーホルダー生成", icon='MESH_DATA')
         layout.separator()
 
-        # 県選択
         layout.prop(scene, "keychain_prefecture", text="都道府県")
 
-        # パラメータ
         box = layout.box()
         box.label(text="パラメータ", icon='PREFERENCES')
         box.prop(scene, "keychain_exaggeration", text="標高誇張倍率")
@@ -1239,12 +1004,10 @@ class KEYCHAIN_PT_MainPanel(bpy.types.Panel):
         box.prop(scene, "keychain_sea_land_gap", text="海と陸の隙間 (mm)")
         box.prop(scene, "keychain_pdf_line_width", text="PDFの線の太さ (pt)")
         box.prop(scene, "keychain_resolution", text="解像度")
-
         box.prop(scene, "keychain_zoom", text="タイルズームレベル")
 
         layout.separator()
 
-        # 生成ボタン
         layout.operator("keychain.generate", text="キーホルダーを生成", icon='PLAY')
         layout.operator("keychain.export_stl", text="STL エクスポート", icon='EXPORT')
 
@@ -1322,7 +1085,10 @@ class KEYCHAIN_OT_ExportSTL(bpy.types.Operator):
         return {'FINISHED'}
 
 
-# プロパティ定義
+# ============================================================
+# プロパティ定義・登録
+# ============================================================
+
 PREFECTURE_ITEMS = [(name, name, "") for code, name in sorted(PREFECTURE_NAMES.items())]
 
 
@@ -1408,40 +1174,12 @@ def unregister():
     bpy.utils.unregister_class(KEYCHAIN_OT_Generate)
     bpy.utils.unregister_class(KEYCHAIN_PT_MainPanel)
 
-    del bpy.types.Scene.keychain_prefecture
-    del bpy.types.Scene.keychain_exaggeration
-    del bpy.types.Scene.keychain_margin_ratio
-    del bpy.types.Scene.keychain_diameter
-    del bpy.types.Scene.keychain_hole_diameter
-    del bpy.types.Scene.keychain_hole_inner_margin
-    del bpy.types.Scene.keychain_main_terrain_offset
-    del bpy.types.Scene.keychain_sea_land_gap
-    del bpy.types.Scene.keychain_pdf_line_width
-    del bpy.types.Scene.keychain_pdf_color_sea
-    del bpy.types.Scene.keychain_pdf_color_land
-    del bpy.types.Scene.keychain_pdf_color_target
-    del bpy.types.Scene.keychain_resolution
-    del bpy.types.Scene.keychain_zoom
-
-
-# ============================================================
-# スクリプト直接実行用
-# ============================================================
-
-# 再実行時に既存の登録をクリア (Blender スクリプティングタブ / VSCode 両対応)
-try:
-    unregister()
-except Exception:
-    pass
-register()
-
-if __name__ == "__main__":
-    pass  # 上記で登録済み
-
-    # デフォルトで神奈川県を自動生成する場合はコメント解除:
-    # gen = KeychainGenerator("神奈川県", config={
-    #     'exaggeration': 2.0,
-    #     'resolution': 200,
-    #     'zoom': 10,
-    # })
-    # gen.generate()
+    for prop in [
+        "keychain_prefecture", "keychain_exaggeration", "keychain_margin_ratio",
+        "keychain_diameter", "keychain_hole_diameter", "keychain_hole_inner_margin",
+        "keychain_main_terrain_offset", "keychain_sea_land_gap", "keychain_pdf_line_width",
+        "keychain_pdf_color_sea", "keychain_pdf_color_land", "keychain_pdf_color_target",
+        "keychain_resolution", "keychain_zoom",
+    ]:
+        if hasattr(bpy.types.Scene, prop):
+            delattr(bpy.types.Scene, prop)

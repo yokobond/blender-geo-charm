@@ -1,3 +1,5 @@
+
+# Python-generated files
 # Python
 __pycache__/
 *.py[cod]
@@ -7,6 +9,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+wheels/
 .eggs/
 venv/
 .venv/
