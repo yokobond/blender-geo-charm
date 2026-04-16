@@ -1047,6 +1047,74 @@ class KeychainGenerator:
                             region.view_distance = 0.1
                 break
 
+    def _export_cut_svg(self, svg_path, lon_min, lat_min, lon_max, lat_max):
+        """県境と土台輪郭のみのカット用SVGを保存"""
+        d_mm = self.builder.diameter_mm
+        w_mm, h_mm = d_mm, d_mm
+        
+        # 縮尺計算
+        sx = w_mm / (lon_max - lon_min)
+        sy = h_mm / (lat_max - lat_min)
+
+        def proj_x(lon):
+            return (lon - lon_min) * sx
+            
+        def proj_y(lat):
+            return (lat_max - lat) * sy
+
+        parts = []
+        
+        # SVG Header (線幅や色などをレーザーカッター用に赤の極細線とする)
+        parts.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w_mm:.3f} {h_mm:.3f}" width="{w_mm}mm" height="{h_mm}mm">')
+        style = 'fill="none" stroke="red" stroke-width="0.5"'
+        
+        # 1. ジオメトリ(県境)
+        if SHAPELY_AVAILABLE:
+            poly = self.boundary.get_prefecture_polygon(self.prefecture_name)
+            
+            def add_polygon(p):
+                # exterior
+                path_data = []
+                coords = list(p.exterior.coords)
+                for i, (lon, lat) in enumerate(coords):
+                    cmd = "M" if i == 0 else "L"
+                    path_data.append(f"{cmd} {proj_x(lon):.3f} {proj_y(lat):.3f}")
+                path_data.append("Z")
+                
+                # interiors
+                for interior in p.interiors:
+                    icoords = list(interior.coords)
+                    for i, (lon, lat) in enumerate(icoords):
+                        cmd = "M" if i == 0 else "L"
+                        path_data.append(f"{cmd} {proj_x(lon):.3f} {proj_y(lat):.3f}")
+                    path_data.append("Z")
+                
+                d_str = " ".join(path_data)
+                parts.append(f'  <path d="{d_str}" {style} />')
+                
+            if poly:
+                from shapely.geometry import Polygon, MultiPolygon
+                if isinstance(poly, Polygon):
+                    add_polygon(poly)
+                elif isinstance(poly, MultiPolygon):
+                    for geom in poly.geoms:
+                        add_polygon(geom)
+        
+        # 2. 土台外枠 (円)
+        rad = d_mm / 2.0
+        parts.append(f'  <circle cx="{rad:.3f}" cy="{rad:.3f}" r="{rad:.3f}" {style} />')
+        
+        # 3. キーチェーン穴
+        hole_r = self.builder.hole_diameter / 2.0
+        # 穴はBlender上 +Y (北) 方向にある: SVGではYは上が0のシステム
+        hole_cy = rad - (rad - self.builder.hole_margin)
+        parts.append(f'  <circle cx="{rad:.3f}" cy="{hole_cy:.3f}" r="{hole_r:.3f}" {style} />')
+        
+        parts.append('</svg>')
+        
+        with open(svg_path, 'w', encoding='utf-8') as f:
+            f.write("\n".join(parts))
+
     def export_stl(self, filepath=None):
         """STL ファイルにエクスポート"""
         import os
@@ -1090,6 +1158,16 @@ class KeychainGenerator:
             pass
 
         lon_min, lat_min, lon_max, lat_max, _ = self._compute_bounds()
+
+        # --- SVG出力 ---
+        print(f"  → 土台用SVGを {output_dir} にエクスポート中...")
+        try:
+            svg_filename = f"{self.prefecture_name}_cut.svg"
+            svg_path = os.path.join(output_dir, svg_filename)
+            self._export_cut_svg(svg_path, lon_min, lat_min, lon_max, lat_max)
+            print(f"  → SVG出力完了: {svg_path}")
+        except Exception as e:
+            print(f"  → SVG出力エラー: {e}")
 
         print(f"  → 土台用PDFを {output_dir} にエクスポート中...")
         try:
