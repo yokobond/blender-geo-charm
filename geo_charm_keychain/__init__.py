@@ -588,21 +588,6 @@ class KeychainModelBuilder:
             z_offset_mm=z_offset_mm
         )
 
-        if obj and obj.data.vertices:
-            bpy.context.view_layer.objects.active = obj
-            bpy.ops.object.mode_set(mode='EDIT')
-            bm = bmesh.from_edit_mesh(obj.data)
-
-            sf = self.scale_factor
-            bottom_z = 0.0
-            island_z = -self.island_offset * sf
-            for v in bm.verts:
-                if abs(v.co.z - bottom_z) < 1e-5:
-                    v.co.z = island_z
-
-            bmesh.update_edit_mesh(obj.data)
-            bpy.ops.object.mode_set(mode='OBJECT')
-
         return obj
 
     def _add_solid_bottom(self, obj, target_z=0.0):
