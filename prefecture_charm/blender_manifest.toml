@@ -1,19 +1,18 @@
 schema_version = "1.0.0"
-id = "geo_charm_keychain"
+
+# Example of manifest file for a Blender extension
+# Change the values according to your extension
+id = "prefecture_charm"
 version = "1.0.0"
-name = "Geo Charm Keychain"
+name = "Prefecture Charm"
 tagline = "都道府県の地形データから3Dキーホルダーモデルを生成"
-maintainer = "Koji Yokokawa <koji.yokokawa@gmail.com>"
+maintainer = "Koji Yokokawa"
+# Supported types: "add-on", "theme"
 type = "add-on"
+
 blender_version_min = "4.2.0"
 
 license = ["SPDX:MIT"]
-
-[build]
-paths_exclude_pattern = [
-  "__pycache__/",
-  "*.pyc",
-]
 
 wheels = [
   "./wheels/certifi-2026.2.25-py3-none-any.whl",
@@ -24,4 +23,11 @@ wheels = [
   "./wheels/requests-2.33.1-py3-none-any.whl",
   "./wheels/shapely-2.1.2-cp311-cp311-macosx_11_0_arm64.whl",
   "./wheels/urllib3-2.6.3-py3-none-any.whl",
+]
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "/.git/",
+  "/*.zip",
 ]
