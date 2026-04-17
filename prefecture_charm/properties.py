@@ -1,10 +1,16 @@
+# properties.py - Blender シーンプロパティの登録・解除
+# UI パネルで操作するパラメータを bpy.types.Scene に動的に追加する。
+# アドオン有効化時に register()、無効化時に unregister() が呼ばれる。
+
 import bpy
 
 from .constants import PREFECTURE_NAMES
 
+# EnumProperty 用の選択肢リスト: (識別子, 表示名, 説明)
 PREFECTURE_ITEMS = [(name, name, "") for code, name in sorted(PREFECTURE_NAMES.items())]
 
 def register():
+    """アドオン有効化時に全シーンプロパティを bpy.types.Scene に登録する。"""
     bpy.types.Scene.prefecture_prefecture = bpy.props.EnumProperty(
         name="都道府県",
         items=PREFECTURE_ITEMS,
@@ -77,6 +83,8 @@ def register():
     )
 
 def unregister():
+    """アドオン無効化時に全シーンプロパティを bpy.types.Scene から削除する。"""
+    # アドオン解除時にシーンプロパティを全て削除する
     for prop in [
         "prefecture_prefecture", "prefecture_exaggeration", "prefecture_margin_ratio",
         "prefecture_diameter", "prefecture_hole_diameter", "prefecture_hole_inner_margin",

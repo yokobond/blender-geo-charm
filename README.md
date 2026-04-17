@@ -16,7 +16,7 @@ Blender 4.2 以上の Extension Add-on として動作します。
 ```bash
 # リポジトリのルートで実行
 ./build_addon.sh
-# → dist/geo_charm_keychain.zip が生成されます
+# → dist/prefecture_charm.zip が生成されます
 
 # wheels を再ダウンロードしたい場合 (バージョン更新時など)
 ./build_addon.sh --refresh
@@ -27,8 +27,8 @@ Blender 4.2 以上の Extension Add-on として動作します。
 1. Blender を起動
 2. **Edit > Preferences > Extensions** を開く
 3. 右上の **▼ > Install from Disk** をクリック
-4. `dist/geo_charm_keychain.zip` を選択
-5. 一覧に **Geo Charm Keychain** が表示されたら有効化
+4. `dist/prefecture_charm.zip` を選択
+5. 一覧に **Prefecture Charm** が表示されたら有効化
 
 ---
 
@@ -47,14 +47,21 @@ Blender 4.2 以上の Extension Add-on として動作します。
 
 ```
 .
-├── geo_charm_keychain/          # Extension Add-on 本体
-│   ├── __init__.py              #   メインロジック・UI
-│   ├── export_prefecture_pdf.py #   PDF出力ヘルパー
-│   ├── blender_manifest.toml   #   Extension メタデータ・wheels 宣言
-│   └── wheels/                 #   バンドル済みパッケージ (.whl)
+├── prefecture_charm/            # Extension Add-on 本体
+│   ├── __init__.py              #   アドオン登録エントリーポイント
+│   ├── auto_load.py             #   クラス自動検出・登録ヘルパー
+│   ├── builder.py               #   3Dモデル構築ロジック
+│   ├── constants.py             #   定数定義 (URL・デフォルト値)
+│   ├── export_prefecture_pdf.py #   県境 PDF 出力ヘルパー
+│   ├── operators.py             #   Blender オペレータ定義
+│   ├── panel.py                 #   サイドバー UI パネル
+│   ├── properties.py            #   シーンプロパティ登録・解除
+│   ├── utils.py                 #   標高取得・県境ポリゴン管理
+│   ├── blender_manifest.toml    #   Extension メタデータ・wheels 宣言
+│   └── wheels/                  #   バンドル済みパッケージ (.whl)
 ├── build_addon.sh               # Add-on zip ビルドスクリプト
 └── dist/                        # ビルド成果物 (gitignore 済み)
-    └── geo_charm_keychain.zip
+    └── prefecture_charm.zip
 ```
 
 ---
@@ -67,10 +74,13 @@ Blender 4.2 以上の Extension Add-on として動作します。
 | 標高誇張倍率 | 3.0 | 1.0〜10.0 | 標高を何倍に誇張するか |
 | マージン比率 | 0.3 | 0.0〜1.0 | 県境周辺の余白の広さ |
 | 直径 (mm) | 50.0 | 30〜100 | 円形土台の直径 |
+| 海の色 | (0.0, 0.5, 1.0) | RGB | PDF・3Dモデルの海の色 |
+| 他の陸地の色 | (0.0, 0.8, 0.0) | RGB | PDF・3Dモデルの隣接陸地の色 |
+| 対象県の色 | (1.0, 1.0, 0.0) | RGB | PDF・3Dモデルの対象県の色 |
 | 穴の内側マージン (mm) | 1.0 | 0.0〜10.0 | リング穴の内側端から土台縁までの距離 |
 | 対象県の底上げ高さ (mm) | 2.0 | 0.0〜10.0 | 対象県を他パーツより何mm高くするか |
 | 海・陸の隙間 (mm) | 0.0 | 0.0〜4.0 | 海と陸地の間のアクリルが見える隙間幅 |
-| PDFの線の太さ (pt) | 1.5 | 0.1〜10.0 | 出力PDF県境ラインの太さ |
+| PDFの線の太さ (pt) | 0.0 | 0.0〜10.0 | 出力PDF県境ラインの太さ (0で線なし) |
 | 解像度 | 200 | 50〜500 | 地形メッシュの分割数 |
 | ズームレベル | 10 | 8〜14 | 標高タイルの精度 |
 
@@ -105,8 +115,8 @@ Blender 4.2 以上の Extension Add-on として動作します。
 - `sea_land_gap_mm` で陸地との間にアクリルが見える隙間を設定可能
 
 ### 5. 島パーツ (該当する場合)
-- 本土から離れた島は別パーツとして生成
-- 底面に接着用の凹み (`island_offset_mm`: デフォルト0.3mm)
+- 本土ポリゴン面積の 0.1% 以上の島嶼部を別パーツとして生成
+- 対象県と同じ高さオフセット・色を使用
 
 ---
 

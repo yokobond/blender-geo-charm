@@ -1,4 +1,7 @@
+# panel.py - 3D ビューポートのサイドバーに表示する UI パネル定義
+
 import bpy
+
 
 class PREFECTURE_PT_MainPanel(bpy.types.Panel):
     bl_label = "キーホルダー生成"
@@ -8,6 +11,7 @@ class PREFECTURE_PT_MainPanel(bpy.types.Panel):
     bl_category = "キーホルダー"
 
     def draw(self, context):
+        """パネルの UI レイアウトを描画する。"""
         layout = self.layout
         scene = context.scene
 

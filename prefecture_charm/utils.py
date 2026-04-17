@@ -1,3 +1,7 @@
+# utils.py - 標高データ取得・県境ポリゴン管理のユーティリティ
+# ElevationFetcher: 国土地理院タイルから標高グリッドを構築する
+# PrefectureBoundary: GeoJSON から都道府県ポリゴンを管理し、マスク生成を行う
+
 import math
 import os
 import json
@@ -10,35 +14,53 @@ SHAPELY_AVAILABLE = True
 
 from .constants import GSI_DEM_URL, GSI_DEM5A_URL, PREFECTURES_GEOJSON_URL, DEFAULT_ZOOM_LEVEL
 
+
 def latlon_to_tile(lat, lon, zoom):
+    """緯度経度をWebメルカトル (XYZ) タイル座標に変換する。"""
     n = 2 ** zoom
     x = int((lon + 180.0) / 360.0 * n)
     lat_rad = math.radians(lat)
     y = int((1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
     return x, y
 
+
 def tile_to_latlon(x, y, zoom):
+    """XYZ タイル座標の左上隅の緯度経度を返す。"""
     n = 2 ** zoom
     lon = x / n * 360.0 - 180.0
     lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * y / n)))
     lat = math.degrees(lat_rad)
     return lat, lon
 
+
 def tile_bounds(x, y, zoom):
+    """XYZ タイルの地理的バウンディングボックス (lat_max, lon_min, lat_min, lon_max) を返す。"""
     lat_max, lon_min = tile_to_latlon(x, y, zoom)
     lat_min, lon_max = tile_to_latlon(x + 1, y + 1, zoom)
     return lat_max, lon_min, lat_min, lon_max
 
 
 class ElevationFetcher:
+    """国土地理院の標高タイルを取得し、指定範囲の標高グリッドを生成するクラス。
+
+    タイルデータはファイルシステムとメモリの2段キャッシュで管理し、
+    同一タイルの重複ダウンロードを防ぐ。
+    """
+
     def __init__(self, zoom=DEFAULT_ZOOM_LEVEL, use_dem5a=False, cache_dir=None):
         self.zoom = zoom
         self.base_url = GSI_DEM5A_URL if use_dem5a else GSI_DEM_URL
         self.cache_dir = cache_dir or os.path.join(tempfile.gettempdir(), "gsi_dem_cache")
         os.makedirs(self.cache_dir, exist_ok=True)
-        self._tile_cache = {}
+        self._tile_cache = {}  # メモリキャッシュ: {(tx, ty, zoom): ndarray}
 
     def _fetch_tile(self, tx, ty):
+        """単一タイルの標高データ (256x256 ndarray) を取得する。
+
+        メモリキャッシュ → ファイルキャッシュ → HTTP の順で参照し、
+        海や欠損値 ('e') は 0.0m に、異常値 (<-100m, >8000m) もクリップする。
+        タイルが存在しない場合 (404) やネットワーク障害時はゼロ配列を返す。
+        """
         cache_key = (tx, ty, self.zoom)
         if cache_key in self._tile_cache:
             return self._tile_cache[cache_key]
@@ -58,6 +80,7 @@ class ElevationFetcher:
         try:
             resp = requests.get(url, timeout=30)
             if resp.status_code == 404:
+                # 海域など標高データが存在しないタイルはゼロで埋める
                 data = np.zeros((256, 256), dtype=np.float32)
                 self._tile_cache[cache_key] = data
                 return data
@@ -68,6 +91,7 @@ class ElevationFetcher:
             self._tile_cache[cache_key] = data
             return data
 
+        # CSV テキスト形式のタイルデータをパース (256行×256列)
         data = np.zeros((256, 256), dtype=np.float32)
         lines = resp.text.strip().split('\n')
         for row_idx, line in enumerate(lines[:256]):
@@ -91,6 +115,11 @@ class ElevationFetcher:
         return data
 
     def get_elevation_grid(self, lat_min, lat_max, lon_min, lon_max, resolution=256):
+        """指定した地理範囲の標高グリッドを resolution×resolution で返す。
+
+        必要なタイルを全て取得して結合し、要求範囲をクロップした後、
+        線形補間で resolution にリサンプリングする。
+        """
         tx_min, ty_max = latlon_to_tile(lat_min, lon_min, self.zoom)
         tx_max, ty_min = latlon_to_tile(lat_max, lon_max, self.zoom)
 
@@ -145,13 +174,19 @@ class ElevationFetcher:
 
 
 class PrefectureBoundary:
+    """都道府県の境界ポリゴンを管理し、マスク生成や隣接県検索を行うクラス。
+
+    GeoJSON データを URL またはファイルから読み込み、Shapely ジオメトリとして保持する。
+    create_mask() で各都道府県の領域を 0/1 ラスタマスクに変換できる。
+    """
 
     def __init__(self, geojson_path=None):
-        self.features = {}
+        self.features = {}          # {県名: {geometry, properties}}
         self._geojson_data = None
         self._geojson_path = geojson_path
 
     def load_from_url(self, url=PREFECTURES_GEOJSON_URL):
+        """GeoJSON をキャッシュ付きで URL から読み込む。"""
         cache_file = os.path.join(tempfile.gettempdir(), "japan_prefectures.geojson")
         if os.path.exists(cache_file):
             print("県境データ: キャッシュから読み込み")
@@ -168,11 +203,13 @@ class PrefectureBoundary:
         self._parse_features()
 
     def load_from_file(self, filepath):
+        """ローカルの GeoJSON ファイルから読み込む。"""
         with open(filepath, 'r', encoding='utf-8') as f:
             self._geojson_data = json.load(f)
         self._parse_features()
 
     def _parse_features(self):
+        """GeoJSON の features 配列を解析し self.features に格納する。"""
         if not SHAPELY_AVAILABLE:
             print("WARNING: shapely がないため県境ポリゴンの解析をスキップ")
             return
@@ -188,6 +225,7 @@ class PrefectureBoundary:
                 }
 
     def get_prefecture_polygon(self, name):
+        """県名でポリゴンを検索する。完全一致 → 部分一致の順で照合する。"""
         if name in self.features:
             return self.features[name]['geometry']
         for key, val in self.features.items():
@@ -196,6 +234,7 @@ class PrefectureBoundary:
         return None
 
     def get_neighbor_prefectures(self, target_name, buffer_deg=0.1):
+        """対象県を buffer_deg だけ膨らませた領域と交差する隣接県名のリストを返す。"""
         target = self.get_prefecture_polygon(target_name)
         if target is None:
             return []
@@ -211,6 +250,7 @@ class PrefectureBoundary:
         return neighbors
 
     def get_bounds(self, name):
+        """県のバウンディングボックス (minx, miny, maxx, maxy) を返す。見つからない場合は None。"""
         poly = self.get_prefecture_polygon(name)
         if poly is None:
             return None
@@ -218,6 +258,11 @@ class PrefectureBoundary:
 
     @staticmethod
     def _rasterize(geom, resolution, lon_min, lat_min, lon_max, lat_max) -> np.ndarray:
+        """Shapely ジオメトリを resolution × resolution の 0/1 マスク配列に変換する。
+
+        shapely.vectorized が利用可能な場合はベクトル化処理で高速化する。
+        利用できない場合は Point ベースのフォールバック実装を使用する。
+        """
         try:
             from shapely.vectorized import contains as vec_contains
         except ImportError:
@@ -240,12 +285,14 @@ class PrefectureBoundary:
         return inside.reshape(resolution, resolution).astype(np.float32)
 
     def create_mask(self, name, resolution, lon_min, lat_min, lon_max, lat_max):
+        """指定県の領域マスクを生成する。県が見つからない場合は全面1のマスクを返す。"""
         poly = self.get_prefecture_polygon(name)
         if poly is None:
             return np.ones((resolution, resolution), dtype=np.float32)
         return self._rasterize(poly, resolution, lon_min, lat_min, lon_max, lat_max)
 
     def create_other_land_mask(self, target_name, resolution, lon_min, lat_min, lon_max, lat_max):
+        """対象県以外の全陸地を合成したマスクを生成する。隣接県・遠隔地問わず全て含む。"""
         from shapely.ops import unary_union
         other_union = unary_union([
             data['geometry'] for name, data in self.features.items()
@@ -254,6 +301,13 @@ class PrefectureBoundary:
         return self._rasterize(other_union, resolution, lon_min, lat_min, lon_max, lat_max)
 
     def detect_islands(self, name):
+        """県のポリゴンを本土と島嶼部に分離する。
+
+        MultiPolygon の場合、最大面積のポリゴンを本土とし、
+        本土の 0.1% 以上の面積を持つ残りのポリゴンを島として返す。
+        Returns:
+            (main_polygon, [island_polygon, ...])
+        """
         poly = self.get_prefecture_polygon(name)
         if poly is None:
             return None, []
@@ -263,6 +317,7 @@ class PrefectureBoundary:
             parts.sort(key=lambda p: p.area, reverse=True)
             main = parts[0]
             islands = parts[1:]
+            # 本土面積の 0.1% 未満の小島は省略する
             islands = [isl for isl in islands if isl.area > main.area * 0.001]
             return main, islands
         else:

@@ -1,6 +1,12 @@
+# operators.py - Blender オペレータ定義
+# UI ボタンに対応する処理を実装する。
+# PREFECTURE_OT_Generate: キーホルダー3Dモデルを生成する
+# PREFECTURE_OT_ExportSTL: 生成済みモデルを STL としてエクスポートする
+
 import bpy
 
 from .builder import KeychainGenerator
+
 
 class PREFECTURE_OT_Generate(bpy.types.Operator):
     bl_idname = "prefecture.generate"
@@ -8,7 +14,9 @@ class PREFECTURE_OT_Generate(bpy.types.Operator):
     bl_description = "選択した都道府県のキーホルダー3Dモデルを生成"
 
     def execute(self, context):
+        """UI パネルのパラメータを元にキーホルダー3Dモデルを生成する。"""
         scene = context.scene
+        # UI パネルのプロパティ値を config 辞書にまとめて KeychainGenerator に渡す
         config = {
             'exaggeration': scene.prefecture_exaggeration,
             'margin_ratio': scene.prefecture_margin_ratio,
@@ -47,11 +55,13 @@ class PREFECTURE_OT_ExportSTL(bpy.types.Operator):
     filepath: bpy.props.StringProperty(subtype='FILE_PATH')
 
     def invoke(self, context, event):
+        # ファイルダイアログを開き、デフォルトのファイル名を設定する
         self.filepath = f"keychain_{context.scene.prefecture_prefecture}.stl"
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
+        """ファイルダイアログで選択したパスへ STL をエクスポートする。"""
         scene = context.scene
         config = {
             'exaggeration': scene.prefecture_exaggeration,

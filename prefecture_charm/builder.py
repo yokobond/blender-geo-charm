@@ -1,3 +1,7 @@
+# builder.py - 3D モデル構築ロジック
+# KeychainModelBuilder: Blender オブジェクト (土台・地形メッシュ等) を直接生成する
+# KeychainGenerator: データ取得からモデル構築・エクスポートまでの全工程を統括する
+
 import bpy
 import bmesh
 import math
@@ -18,8 +22,18 @@ from .constants import (
 )
 
 class KeychainModelBuilder:
+    """Blender API を使って個々のモデルパーツを生成するクラス。
+
+    - build_circular_base(): アクリル円形土台とキーリング穴を作成
+    - build_terrain_mesh(): 標高グリッドとマスクから地形メッシュを生成
+    - build_other_land_engraving(): 隣接陸地の平坦なメッシュを生成
+    - build_sea_indication(): 海域の平坦なメッシュを生成
+    - build_island_piece(): 島嶼部の地形メッシュを生成
+    - add_keychain_ring_preview(): キーリングのプレビュートーラスを追加
+    """
 
     def __init__(self, config=None):
+        """config 辞書からパラメータを読み込み、スケール・オフセット値を初期化する。"""
         self.config = config or {}
         self.diameter_mm = self.config.get('diameter_mm', DEFAULT_KEYCHAIN_DIAMETER_MM)
         self.base_thickness = self.config.get('base_thickness_mm', DEFAULT_BASE_THICKNESS_MM)
@@ -27,6 +41,7 @@ class KeychainModelBuilder:
         self.hole_diameter = self.config.get('hole_diameter_mm', DEFAULT_HOLE_DIAMETER_MM)
 
         hole_inner_margin = self.config.get('hole_inner_margin_mm', 1.0)
+        # hole_margin = 穴の内側マージン + 穴半径 = 穴中心から土台端までの距離
         self.hole_margin = hole_inner_margin + (self.hole_diameter / 2.0)
 
         self.neighbor_thickness = self.config.get('neighbor_thickness_mm', DEFAULT_NEIGHBOR_THICKNESS_MM)
@@ -34,10 +49,12 @@ class KeychainModelBuilder:
         self.main_terrain_offset = self.config.get('main_terrain_offset_mm', DEFAULT_MAIN_TERRAIN_OFFSET_MM)
         self.exaggeration = self.config.get('exaggeration', 2.0)
 
+        # Blender の単位は m、キーホルダーの寸法は mm なので 0.001 倍でスケール変換する
         self.scale_factor = 0.001
-        self.ground_size_m = 0.0
+        self.ground_size_m = 0.0  # 実際の地面サイズ (m)、高さスケール計算に使用
 
     def clear_scene(self):
+        """シーン内の全オブジェクトと Keychain コレクションを削除する。"""
         bpy.ops.object.select_all(action='SELECT')
         bpy.ops.object.delete(use_global=False)
 
@@ -46,11 +63,16 @@ class KeychainModelBuilder:
                 bpy.data.collections.remove(col)
 
     def _create_collection(self, name):
+        """指定した名前の新規コレクションを作成してシーンに追加する。"""
         col = bpy.data.collections.new(name)
         bpy.context.scene.collection.children.link(col)
         return col
 
     def build_circular_base(self, collection):
+        """アクリル円形土台を作成し、キーリング穴を Boolean モディファイアで刳り抜く。
+
+        穴のカッターオブジェクト (Keychain_Hole_Cutter) は後で地形メッシュにも再利用される。
+        """
         sf = self.scale_factor
         radius = self.diameter_mm / 2.0 * sf
         thickness = self.base_thickness * sf
@@ -128,12 +150,20 @@ class KeychainModelBuilder:
                            name="Terrain_Main", height_scale=None,
                            material_color=(0.4, 0.35, 0.28, 1.0),
                            z_offset_mm=0.0):
+        """標高グリッドとマスクから地形メッシュを生成する。
+
+        - mask が 0.5 未満のセルと円形土台の外側はスキップする
+        - 標高の 95 パーセンタイルで正規化し、外れ値による過度な変形を防ぐ
+        - height_scale が None の場合、ground_size_m と exaggeration から自動計算する
+        - メッシュの下面を _add_solid_bottom() で塞いで立体化する
+        """
         sf = self.scale_factor
         radius = self.diameter_mm / 2.0 * sf
         resolution = elevations.shape[0]
 
         masked_vals = elevations[mask > 0.5]
         if masked_vals.size > 0 and masked_vals.max() > 0:
+            # 外れ値の影響を抑えるため 95 パーセンタイルで上限を設定する
             elev_max = float(np.percentile(masked_vals, 95))
             elevations = np.clip(elevations, 0.0, elev_max * 1.5)
         else:
@@ -143,6 +173,7 @@ class KeychainModelBuilder:
 
         if height_scale is None:
             if hasattr(self, 'ground_size_m') and self.ground_size_m > 0:
+                # 実際の地面サイズに対してキーホルダー直径が占める比率から高さスケールを決める
                 height_scale = (self.diameter_mm * sf / self.ground_size_m) * self.exaggeration
             else:
                 height_scale = self.terrain_max_height * sf * self.exaggeration / elev_max
@@ -221,6 +252,7 @@ class KeychainModelBuilder:
         return obj
 
     def build_other_land_engraving(self, elevations, mask, collection, z_offset_mm=0.0):
+        """対象県以外の陸地を一定高さの平坦なメッシュとして生成する。"""
         color = self.config.get('pdf_color_land', (0.1, 0.8, 0.2, 1.0))
         flat_elevations = np.full_like(elevations, 0.5)
         return self.build_terrain_mesh(
@@ -232,6 +264,7 @@ class KeychainModelBuilder:
         )
 
     def build_sea_indication(self, elevations, sea_mask, collection, z_offset_mm=0.0):
+        """海域を一定高さの平坦なメッシュとして生成する。"""
         sf = self.scale_factor
         color = self.config.get('pdf_color_sea', (0.0, 0.5, 1.0, 1.0))
         flat_sea = np.full_like(elevations, 0.5)
@@ -244,6 +277,7 @@ class KeychainModelBuilder:
         )
 
     def build_island_piece(self, elevations, island_mask, collection, island_idx=0, z_offset_mm=0.0):
+        """島嶼部の地形メッシュを生成する。対象県と同じ色・高さオフセットを使用する。"""
         name = f"Island_{island_idx}"
         color = self.config.get('pdf_color_target', (1.0, 0.8, 0.0, 1.0))
         obj = self.build_terrain_mesh(
@@ -256,6 +290,11 @@ class KeychainModelBuilder:
         return obj
 
     def _add_solid_bottom(self, obj, target_z=0.0):
+        """地形メッシュの上面を押し出して底面 (target_z) まで伸ばし、閉じた立体にする。
+
+        上面の全面を extrude して、新しく生成された頂点の Z を target_z に移動する。
+        法線方向を修正して正しい向きで閉じる。
+        """
         if not obj.data.vertices:
             return
 
@@ -267,6 +306,7 @@ class KeychainModelBuilder:
             bpy.ops.object.mode_set(mode='OBJECT')
             return
 
+        # 全面を押し出して底面ジオメトリを生成する
         extrude_res = bmesh.ops.extrude_face_region(bm, geom=bm.faces[:])
 
         new_verts = [e for e in extrude_res['geom'] if isinstance(e, bmesh.types.BMVert)]
@@ -281,6 +321,7 @@ class KeychainModelBuilder:
         bpy.ops.object.mode_set(mode='OBJECT')
 
     def add_keychain_ring_preview(self, collection):
+        """キーリングのプレビュー用トーラスをキーホルダー穴の上に配置する。"""
         sf = self.scale_factor
         radius = self.diameter_mm / 2.0 * sf
         hole_center_y = radius - self.hole_margin * sf
@@ -311,8 +352,22 @@ class KeychainModelBuilder:
         return ring
 
 class KeychainGenerator:
+    """都道府県キーホルダー生成の全工程を管理するファサードクラス。
+
+    generate() を呼ぶと以下を順に実行する:
+      1. シーンのクリア
+      2. 県境 GeoJSON の取得
+      3. 対象県の地理範囲計算
+      4. 標高グリッドの取得
+      5. 各種マスクの生成 (対象県・他の陸地・海)
+      6. 3D モデルの構築
+      7. ビューポートの設定
+
+    export_stl() は生成済みモデルを STL・SVG・PDF でエクスポートする。
+    """
 
     def __init__(self, prefecture_name="神奈川県", config=None):
+        """対象県名と設定辞書を受け取り、ElevationFetcher・PrefectureBoundary・KeychainModelBuilder を初期化する。"""
         self.prefecture_name = prefecture_name
         self.config = config or {}
         self.zoom = self.config.get('zoom', DEFAULT_ZOOM_LEVEL)
@@ -328,6 +383,14 @@ class KeychainGenerator:
         })
 
     def _compute_bounds(self):
+        """対象県の地理的バウンディングボックスを計算し、マージンと正方形補正を適用する。
+
+        - GeoJSON から県のバウンドを取得し margin_ratio に従って余白を加える
+        - 県データが取得できない場合は神奈川県周辺のデフォルト値にフォールバックする
+        - 緯度に合わせた縦横比を正規化し、正方形の範囲に揃える (円形土台に合わせるため)
+        Returns:
+            (lon_min, lat_min, lon_max, lat_max, span_deg)
+        """
         bounds = self.boundary.get_bounds(self.prefecture_name)
         if bounds:
             lon_min, lat_min, lon_max, lat_max = bounds
@@ -337,6 +400,7 @@ class KeychainGenerator:
             lon_max += margin
             lat_max += margin
         else:
+            # フォールバック: 神奈川県周辺のデフォルト範囲
             lat_min, lat_max = 35.12, 35.67
             lon_min, lon_max = 138.91, 139.79
             margin = 0.15 * (self.margin_ratio / 0.3)
@@ -347,6 +411,7 @@ class KeychainGenerator:
 
         lat_center = (lat_min + lat_max) / 2
         lon_center = (lon_min + lon_max) / 2
+        # 経度方向は cos(緯度) で補正して地理的な正方形に揃える
         span = max(lat_max - lat_min, (lon_max - lon_min) * math.cos(math.radians(lat_center)))
         lon_span = span / math.cos(math.radians(lat_center))
         lat_min = lat_center - span / 2
@@ -357,6 +422,7 @@ class KeychainGenerator:
         return lon_min, lat_min, lon_max, lat_max, span
 
     def generate(self):
+        """キーホルダー3Dモデルを生成してシーンに追加し、コレクションを返す。"""
         print(f"\n{'='*60}")
         print(f"  キーホルダー生成: {self.prefecture_name}")
         print(f"  標高誇張: {self.exaggeration}倍")
@@ -403,9 +469,11 @@ class KeychainGenerator:
 
             gap_mm = self.config.get('sea_land_gap_mm', 0.0)
             pixel_size_mm = self.builder.diameter_mm / self.resolution
+            # ギャップ幅をピクセル数に変換する
             gap_px = max(1, int(round(gap_mm / pixel_size_mm))) if gap_mm > 0 else 0
 
             def _erode(m, iters):
+                """マスクを iters ピクセル分収縮 (erosion) して海陸間のギャップを作る。"""
                 if iters <= 0 or m.max() == 0:
                     return m
                 t = np.copy(m)
@@ -483,6 +551,7 @@ class KeychainGenerator:
         return col
 
     def _setup_viewport(self):
+        """3D ビューポートのシェーディングをマテリアルプレビューに設定する。"""
         for area in bpy.context.screen.areas:
             if area.type == 'VIEW_3D':
                 for space in area.spaces:
@@ -495,6 +564,10 @@ class KeychainGenerator:
                 break
 
     def _export_cut_svg(self, svg_path, lon_min, lat_min, lon_max, lat_max):
+        """レーザーカット用の SVG ファイルを出力する。
+
+        円形土台の外形、キーリング穴、県境ポリゴンのカットラインを含む。
+        """
         d_mm = self.builder.diameter_mm
         w_mm, h_mm = d_mm, d_mm
 
@@ -502,9 +575,11 @@ class KeychainGenerator:
         sy = h_mm / (lat_max - lat_min)
 
         def proj_x(lon):
+            """経度を SVG の X 座標 (mm) に変換する。"""
             return (lon - lon_min) * sx
 
         def proj_y(lat):
+            """緯度を SVG の Y 座標 (mm) に変換する (Y 軸反転あり)。"""
             return (lat_max - lat) * sy
 
         parts = []
@@ -516,6 +591,7 @@ class KeychainGenerator:
             poly = self.boundary.get_prefecture_polygon(self.prefecture_name)
 
             def add_polygon(p):
+                """Shapely Polygon を SVG <path> 要素として parts に追加する。穴 (interior) も含む。"""
                 path_data = []
                 coords = list(p.exterior.coords)
                 for i, (lon, lat) in enumerate(coords):
@@ -554,6 +630,10 @@ class KeychainGenerator:
             f.write("\n".join(parts))
 
     def export_stl(self, filepath=None):
+        """メッシュを STL にエクスポートし、同ディレクトリに SVG・PDF も出力する。
+
+        キーリングプレビュー (Keyring_*) と穴カッター (Keychain_Hole_Cutter) は除外する。
+        """
         if filepath is None:
             filepath = os.path.join(
                 os.path.expanduser("~"),

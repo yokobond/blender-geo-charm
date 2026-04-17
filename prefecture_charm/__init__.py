@@ -1,15 +1,6 @@
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful, but
-# WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTIBILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-# General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
+# Prefecture Charm - Blender Extension Add-on
+# 国土地理院の標高タイルと都道府県境界GeoJSONを使用し、
+# 都道府県の地形を再現した円形キーホルダー3Dモデルを生成する。
 
 bl_info = {
     "name": "Prefecture Charm",
@@ -24,6 +15,7 @@ bl_info = {
 
 from . import auto_load
 
+# auto_load はアドオン内の全クラスを自動検出して登録・解除する
 auto_load.init()
 
 
