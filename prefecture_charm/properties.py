@@ -23,7 +23,7 @@ def register():
     )
     bpy.types.Scene.prefecture_margin_ratio = bpy.props.FloatProperty(
         name="マージン比率",
-        default=0.3, min=0.0, max=1.0, step=5,
+        default=0.1, min=0.0, max=1.0, step=5,
         description="周辺の余白の広さ (0.0で余白なし)"
     )
     bpy.types.Scene.prefecture_diameter = bpy.props.FloatProperty(
