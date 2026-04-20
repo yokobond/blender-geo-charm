@@ -11,7 +11,21 @@
 Blender 4.2 以上の Extension Add-on として動作します。
 外部パッケージ (shapely・requests・reportlab 等) は zip に同梱されており、別途 `pip install` は不要です。
 
-### 1. zip をビルドする
+### 方法 A: Extension Repository から追加する (推奨)
+
+1. Blender を起動
+2. **Edit > Preferences > Extensions** を開く
+3. 右上の **▼ > Repositories** をクリック
+4. **+** ボタンで新しいリポジトリを追加
+5. **URL** に以下を入力して **OK**
+   ```
+   https://yokobond.github.io/blender-geo-charm/
+   ```
+6. リポジトリ一覧に **Prefecture Charm** が表示されたら **Install** をクリック
+
+### 方法 B: zip をビルドしてインストールする
+
+#### 1. zip をビルドする
 
 ```bash
 # リポジトリのルートで実行
@@ -22,7 +36,7 @@ Blender 4.2 以上の Extension Add-on として動作します。
 ./build_addon.sh --refresh
 ```
 
-### 2. Blender にインストールする
+#### 2. Blender にインストールする
 
 1. Blender を起動
 2. **Edit > Preferences > Extensions** を開く
