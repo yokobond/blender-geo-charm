@@ -25,10 +25,10 @@ jobs:
           - b_plat: linux-x64
             p_plat: manylinux_2_17_x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.6.0
         with:
           python-version: '3.11'
 
@@ -39,7 +39,7 @@ jobs:
           mv dist/prefecture_charm.zip dist/prefecture_charm-${{ matrix.b_plat }}.zip
 
       - name: Upload Zip Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: extension-${{ matrix.b_plat }}
           path: dist/prefecture_charm-${{ matrix.b_plat }}.zip
