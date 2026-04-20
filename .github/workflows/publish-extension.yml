@@ -19,7 +19,7 @@ jobs:
           - b_plat: windows-x64
             p_plat: win_amd64
           - b_plat: macos-x64
-            p_plat: macosx_10_9_x86_64
+            p_plat: macosx_10_15_x86_64
           - b_plat: macos-arm64
             p_plat: macosx_11_0_arm64
           - b_plat: linux-x64
