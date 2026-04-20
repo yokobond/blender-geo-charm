@@ -19,7 +19,7 @@ Blender 4.2 以上の Extension Add-on として動作します。
 4. **+** ボタンで新しいリポジトリを追加
 5. **URL** に以下を入力して **OK**
    ```
-   https://yokobond.github.io/blender-geo-charm/
+   https://yokobond.github.io/blender-geo-charm/index.json
    ```
 6. リポジトリ一覧に **Prefecture Charm** が表示されたら **Install** をクリック
 
