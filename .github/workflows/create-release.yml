@@ -1,0 +1,125 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.0.1)'
+        required: true
+        type: string
+      release_notes:
+        description: 'Release notes (leave blank to auto-generate from commits)'
+        required: false
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+jobs:
+  bump-and-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate version format
+        run: |
+          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: version must be in X.Y.Z format"
+            exit 1
+          fi
+
+      - name: Bump version in __init__.py
+        run: |
+          VERSION="${{ inputs.version }}"
+          TUPLE="($(echo "$VERSION" | tr '.' ', '))"
+          sed -i "s/\"version\": ([0-9]*, [0-9]*, [0-9]*)/\"version\": $TUPLE/" \
+            prefecture_charm/__init__.py
+
+      - name: Bump version in blender_manifest.toml
+        run: |
+          VERSION="${{ inputs.version }}"
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" \
+            prefecture_charm/blender_manifest.toml
+
+      - name: Commit version bump
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add prefecture_charm/__init__.py prefecture_charm/blender_manifest.toml
+          git commit -m "chore: bump version to ${{ inputs.version }}"
+
+      - name: Create and push annotated tag
+        id: tag
+        run: |
+          TAG="v${{ inputs.version }}"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin HEAD
+          git push origin "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  build-extension:
+    needs: bump-and-tag
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - b_plat: windows-x64
+            p_plat: win_amd64
+          - b_plat: macos-x64
+            p_plat: macosx_10_15_x86_64
+          - b_plat: macos-arm64
+            p_plat: macosx_11_0_arm64
+          - b_plat: linux-x64
+            p_plat: manylinux_2_17_x86_64
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ needs.bump-and-tag.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.11'
+
+      - name: Build Zip for ${{ matrix.b_plat }}
+        run: |
+          chmod +x build_addon.sh
+          ./build_addon.sh --pip-platform ${{ matrix.p_plat }} \
+                           --blender-platform ${{ matrix.b_plat }}
+          mv dist/prefecture_charm.zip \
+             dist/prefecture_charm-${{ matrix.b_plat }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: extension-${{ matrix.b_plat }}
+          path: dist/prefecture_charm-${{ matrix.b_plat }}.zip
+
+  create-release:
+    needs: [bump-and-tag, build-extension]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release with assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.bump-and-tag.outputs.tag }}
+          name: Prefecture Charm ${{ needs.bump-and-tag.outputs.tag }}
+          body: ${{ inputs.release_notes }}
+          generate_release_notes: ${{ inputs.release_notes == '' }}
+          draft: false
+          prerelease: false
+          files: dist/prefecture_charm-*.zip
