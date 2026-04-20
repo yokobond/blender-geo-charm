@@ -1,0 +1,80 @@
+name: Publish Extension Repository
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch: # 手動実行用
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build-extension:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - b_plat: windows-x64
+            p_plat: win_amd64
+          - b_plat: macos-x64
+            p_plat: macosx_10_9_x86_64
+          - b_plat: macos-arm64
+            p_plat: macosx_11_0_arm64
+          - b_plat: linux-x64
+            p_plat: manylinux_2_17_x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build Zip for ${{ matrix.b_plat }}
+        run: |
+          chmod +x build_addon.sh
+          ./build_addon.sh --pip-platform ${{ matrix.p_plat }} --blender-platform ${{ matrix.b_plat }}
+          mv dist/prefecture_charm.zip dist/prefecture_charm-${{ matrix.b_plat }}.zip
+
+      - name: Upload Zip Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-${{ matrix.b_plat }}
+          path: dist/prefecture_charm-${{ matrix.b_plat }}.zip
+
+  generate-repo:
+    needs: build-extension
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: repo_site
+          merge-multiple: true
+
+      - name: Install Blender
+        run: |
+          wget -q https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz
+          tar -xf blender-4.2.0-linux-x64.tar.xz
+          echo "$PWD/blender-4.2.0-linux-x64" >> $GITHUB_PATH
+
+      - name: Generate Repository Index
+        run: |
+          blender --command extension server-generate --repo-dir ./repo_site --html
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './repo_site'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
