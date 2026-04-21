@@ -7,7 +7,7 @@ bl_info = {
     "author": "Koji Yokokawa",
     "description": "国土地理院の標高データから都道府県キーホルダー3Dモデルを生成",
     "blender": (4, 2, 0),
-    "version": (1, 0, 2),
+    "version": (1, 0, 3),
     "location": "View3D > Sidebar > キーホルダー",
     "warning": "",
     "category": "Object",
