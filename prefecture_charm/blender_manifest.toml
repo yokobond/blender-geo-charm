@@ -3,7 +3,7 @@ schema_version = "1.0.0"
 # Example of manifest file for a Blender extension
 # Change the values according to your extension
 id = "prefecture_charm"
-version = "1.0.0"
+version = "1.0.1"
 name = "Prefecture Charm"
 tagline = "都道府県の地形データから3Dキーホルダーモデルを生成"
 maintainer = "Koji Yokokawa"
