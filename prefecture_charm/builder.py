@@ -637,11 +637,11 @@ class KeychainGenerator:
         if filepath is None:
             filepath = os.path.join(
                 os.path.expanduser("~"),
-                f"keychain_{self.prefecture_name}.stl"
+                f"charm_{self.prefecture_name}-3d.stl"
             )
 
         if os.path.isdir(filepath):
-            filepath = os.path.join(filepath, f"keychain_{self.prefecture_name}.stl")
+            filepath = os.path.join(filepath, f"charm_{self.prefecture_name}-3d.stl")
         elif not filepath.lower().endswith(".stl"):
             filepath += ".stl"
 
@@ -670,7 +670,8 @@ class KeychainGenerator:
 
         print(f"  → 土台用SVGを {output_dir} にエクスポート中...")
         try:
-            svg_filename = f"{self.prefecture_name}_cut.svg"
+            safe_name = self.prefecture_name.replace("/", "_").replace("\\", "_")
+            svg_filename = f"charm_{safe_name}-cut.svg"
             svg_path = os.path.join(output_dir, svg_filename)
             self._export_cut_svg(svg_path, lon_min, lat_min, lon_max, lat_max)
             print(f"  → SVG出力完了: {svg_path}")
@@ -680,9 +681,12 @@ class KeychainGenerator:
         print(f"  → 土台用PDFを {output_dir} にエクスポート中...")
         try:
             from . import export_prefecture_pdf as _pdf_mod
+            safe_name = self.prefecture_name.replace("/", "_").replace("\\", "_")
+            print_pdf_filename = f"charm_{safe_name}-print.pdf"
             pdf_path = _pdf_mod.export_prefecture_pdf(
                 prefecture_name=self.prefecture_name,
                 output_dir=output_dir,
+                filename=print_pdf_filename,
                 margin_mm=1.0,
                 exact_bounds=(lon_min, lat_min, lon_max, lat_max),
                 exact_diameter_mm=self.builder.diameter_mm,
@@ -694,3 +698,24 @@ class KeychainGenerator:
             print(f"  → PDF出力完了: {pdf_path}")
         except Exception as e:
             print(f"  → PDF出力エラー: {e}")
+
+        print(f"  → 土台用白マスクPDFを {output_dir} にエクスポート中...")
+        try:
+            safe_name = self.prefecture_name.replace("/", "_").replace("\\", "_")
+            mask_filename = f"charm_{safe_name}-mask.pdf"
+            pdf_path_white = _pdf_mod.export_prefecture_pdf(
+                prefecture_name=self.prefecture_name,
+                output_dir=output_dir,
+                filename=mask_filename,
+                draw_neighbors=False,
+                margin_mm=1.0,
+                exact_bounds=(lon_min, lat_min, lon_max, lat_max),
+                exact_diameter_mm=self.builder.diameter_mm,
+                line_width_target=0.0,
+                color_sea=None,
+                color_land=None,
+                color_target=(0.0, 0.0, 0.0)
+            )
+            print(f"  → 白黒マスクPDF出力完了: {pdf_path_white}")
+        except Exception as e:
+            print(f"  → 白黒マスクPDF出力エラー: {e}")

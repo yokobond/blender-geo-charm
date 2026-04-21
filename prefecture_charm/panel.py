@@ -4,11 +4,11 @@ import bpy
 
 
 class PREFECTURE_PT_MainPanel(bpy.types.Panel):
-    bl_label = "キーホルダー生成"
-    bl_idname = "PREFECTURE_PT_main"
+    bl_label = "都道府県キーホルダー"
+    bl_idname = "VIEW3D_PT_prefecture_keychain"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "キーホルダー"
+    bl_category = "Geo Charm"
 
     def draw(self, context):
         """パネルの UI レイアウトを描画する。"""

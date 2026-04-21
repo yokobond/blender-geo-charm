@@ -56,7 +56,7 @@ class PREFECTURE_OT_ExportSTL(bpy.types.Operator):
 
     def invoke(self, context, event):
         # ファイルダイアログを開き、デフォルトのファイル名を設定する
-        self.filepath = f"keychain_{context.scene.prefecture_prefecture}.stl"
+        self.filepath = f"charm_{context.scene.prefecture_prefecture}-3d.stl"
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 

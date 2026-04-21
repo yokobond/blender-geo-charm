@@ -175,6 +175,7 @@ def draw_geometry(c: rl_canvas.Canvas, geom,
 def export_prefecture_pdf(
     prefecture_name: str,
     output_dir: str = None,
+    filename: str = None,
     draw_neighbors: bool = True,
     page_size="A4",
     margin_mm: float = 15.0,
@@ -253,14 +254,18 @@ def export_prefecture_pdf(
     os.makedirs(output_dir, exist_ok=True)
 
     safe_name = prefecture_name.replace("/", "_").replace("\\", "_")
-    output_path = os.path.join(output_dir, f"prefecture_{safe_name}.pdf")
+    if filename:
+        output_path = os.path.join(output_dir, filename)
+    else:
+        output_path = os.path.join(output_dir, f"prefecture_{safe_name}.pdf")
 
     c = rl_canvas.Canvas(output_path, pagesize=(page_w_pt, page_h_pt))
     c.setTitle(f"{prefecture_name} 県境")
     c.setAuthor("Geo Charm Keychain Add-on")
 
-    c.setFillColor(Color(*color_sea))
-    c.rect(0, 0, page_w_pt, page_h_pt, fill=1, stroke=0)
+    if color_sea is not None:
+        c.setFillColor(Color(*color_sea))
+        c.rect(0, 0, page_w_pt, page_h_pt, fill=1, stroke=0)
 
     if draw_neighbors:
         for name, data in features.items():
