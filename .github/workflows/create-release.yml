@@ -39,8 +39,8 @@ jobs:
       - name: Bump version in __init__.py
         run: |
           VERSION="${{ inputs.version }}"
-          TUPLE="($(echo "$VERSION" | tr '.' ', '))"
-          sed -i "s/\"version\": ([0-9]*, [0-9]*, [0-9]*)/\"version\": $TUPLE/" \
+          TUPLE="($(echo "$VERSION" | sed 's/\./, /g'))"
+          sed -i -E "s/\"version\": \([0-9]+,[ \t]*[0-9]+,[ \t]*[0-9]+\)/\"version\": $TUPLE/" \
             prefecture_charm/__init__.py
 
       - name: Bump version in blender_manifest.toml
@@ -61,7 +61,7 @@ jobs:
         run: |
           TAG="v${{ inputs.version }}"
           git tag -a "$TAG" -m "Release $TAG"
-          git push origin HEAD
+          git push origin HEAD:${{ github.ref_name }}
           git push origin "$TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
